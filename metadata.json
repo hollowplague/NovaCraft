@@ -1,0 +1,8 @@
+{
+  "name": "NovaCraft",
+  "description": "NovaCraft 3D voxel sandbox game",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
