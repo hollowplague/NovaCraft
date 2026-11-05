@@ -53,6 +53,7 @@ fun GameSettingsDialog(
     hapticsEnabled: Boolean,
     onHapticsToggle: (Boolean) -> Unit,
     onRegenerateWorld: () -> Unit,
+    onQuitToTitle: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     Dialog(
@@ -275,6 +276,21 @@ fun GameSettingsDialog(
                         .height(42.dp)
                         .testTag("regenerate_world_button")
                 )
+
+                if (onQuitToTitle != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    BedrockMenuButton(
+                        text = "Save & Quit to Title",
+                        onClick = {
+                            onDismiss()
+                            onQuitToTitle.invoke()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                            .testTag("quit_to_title_button")
+                    )
+                }
             }
         }
     }

@@ -185,48 +185,72 @@ class VoxelShader {
         initCrackBuffers()
     }
 
-    private var crackBuffer: FloatBuffer? = null
+    private var crackCubeBuffer: FloatBuffer? = null
 
     private fun initCrackBuffers() {
-        val e = 0.003f
+        // Build 6 faces of a unit cube (slightly expanded by 0.004f to prevent z-fighting with the block mesh)
+        // 6 faces * 2 triangles * 3 vertices = 36 vertices
+        // Each vertex: 3 position floats + 2 UV floats = 5 floats per vertex (180 floats total)
+        val e = 0.004f
         val min = -e
         val max = 1.0f + e
-        val mid = 0.5f
 
-        // Progressive spiderweb cracks on all 6 faces of 1x1x1 unit cube
-        val crackLines = floatArrayOf(
-            // Top face (+Y) spiderweb cracks
-            mid, max, mid,  min + 0.2f, max, min + 0.2f,
-            mid, max, mid,  max - 0.2f, max, min + 0.3f,
-            mid, max, mid,  max - 0.15f, max, max - 0.2f,
-            mid, max, mid,  min + 0.3f, max, max - 0.15f,
-            min + 0.2f, max, min + 0.2f,  min, max, mid,
-            max - 0.2f, max, min + 0.3f,  mid, max, min,
-            max - 0.15f, max, max - 0.2f, max, max, mid,
-            min + 0.3f, max, max - 0.15f, mid, max, max,
+        // Local face vertices with normalized 0..1 UVs
+        val verts = floatArrayOf(
+            // Top (+Y)
+            min, max, max,  0f, 1f,
+            max, max, max,  1f, 1f,
+            max, max, min,  1f, 0f,
+            min, max, max,  0f, 1f,
+            max, max, min,  1f, 0f,
+            min, max, min,  0f, 0f,
 
-            // Front face (+Z) cracks
-            mid, mid, max,  min + 0.2f, min + 0.2f, max,
-            mid, mid, max,  max - 0.2f, min + 0.3f, max,
-            mid, mid, max,  max - 0.15f, max - 0.2f, max,
-            mid, mid, max,  min + 0.3f, max - 0.15f, max,
-            min + 0.2f, min + 0.2f, max,  min, mid, max,
-            max - 0.2f, min + 0.3f, max,  mid, min, max,
-            max - 0.15f, max - 0.2f, max, max, mid, max,
-            min + 0.3f, max - 0.15f, max, mid, max, max,
+            // Bottom (-Y)
+            min, min, min,  0f, 1f,
+            max, min, min,  1f, 1f,
+            max, min, max,  1f, 0f,
+            min, min, min,  0f, 1f,
+            max, min, max,  1f, 0f,
+            min, min, max,  0f, 0f,
 
-            // Right face (+X) cracks
-            max, mid, mid,  max, min + 0.2f, min + 0.2f,
-            max, mid, mid,  max, max - 0.2f, min + 0.3f,
-            max, mid, mid,  max, max - 0.15f, max - 0.2f,
-            max, mid, mid,  max, min + 0.3f, max - 0.15f
+            // Front (+Z)
+            min, min, max,  0f, 1f,
+            max, min, max,  1f, 1f,
+            max, max, max,  1f, 0f,
+            min, min, max,  0f, 1f,
+            max, max, max,  1f, 0f,
+            min, max, max,  0f, 0f,
+
+            // Back (-Z)
+            max, min, min,  0f, 1f,
+            min, min, min,  1f, 1f,
+            min, max, min,  1f, 0f,
+            max, min, min,  0f, 1f,
+            min, max, min,  1f, 0f,
+            max, max, min,  0f, 0f,
+
+            // Right (+X)
+            max, min, max,  0f, 1f,
+            max, min, min,  1f, 1f,
+            max, max, min,  1f, 0f,
+            max, min, max,  0f, 1f,
+            max, max, min,  1f, 0f,
+            max, max, max,  0f, 0f,
+
+            // Left (-X)
+            min, min, min,  0f, 1f,
+            min, min, max,  1f, 1f,
+            min, max, max,  1f, 0f,
+            min, min, min,  0f, 1f,
+            min, max, max,  1f, 0f,
+            min, max, min,  0f, 0f
         )
 
-        crackBuffer = ByteBuffer.allocateDirect(crackLines.size * 4)
+        crackCubeBuffer = ByteBuffer.allocateDirect(verts.size * 4)
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
             .apply {
-                put(crackLines)
+                put(verts)
                 position(0)
             }
     }
@@ -247,26 +271,78 @@ class VoxelShader {
     }
 
     /**
-     * Draws authentic MCPE block breaking cracks (stages 0 to 9)
+     * Draws authentic MCPE block breaking cracks (stages 0 to 9) using textured quads over the targeted voxel.
      */
-    fun drawBreakingCracks(mvpMatrix: FloatArray, stage: Int) {
-        val buf = crackBuffer ?: return
+    fun drawBreakingCracks(mvpMatrix: FloatArray, textureId: Int, stage: Int) {
+        val buf = crackCubeBuffer ?: return
         val clampedStage = stage.coerceIn(0, 9)
-        // More lines drawn as stage progresses
-        val linesCount = ((clampedStage + 1) * 4).coerceAtMost(40)
+        val tileIndex = TextureAtlas.TILE_CRACK_START + clampedStage
+        val uv = TextureAtlas.getTileUV(tileIndex)
 
-        GLES20.glUseProgram(wireframeProgram)
-        GLES20.glUniformMatrix4fv(wfMVPLoc, 1, false, mvpMatrix, 0)
-        val alpha = 0.5f + clampedStage * 0.05f
-        GLES20.glUniform4f(wfColorLoc, 0.05f, 0.05f, 0.05f, alpha)
+        // Dynamically build vertex buffer with exact tile UVs
+        val uMin = uv[0]
+        val vMin = uv[1]
+        val uMax = uv[2]
+        val vMax = uv[3]
 
-        GLES20.glEnableVertexAttribArray(wfPosLoc)
-        GLES20.glVertexAttribPointer(wfPosLoc, 3, GLES20.GL_FLOAT, false, 0, buf)
+        // 36 vertices * 5 floats (x, y, z, u, v)
+        val tempBuf = ByteBuffer.allocateDirect(36 * 5 * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
 
-        GLES20.glLineWidth(3.5f)
-        GLES20.glDrawArrays(GLES20.GL_LINES, 0, linesCount)
+        buf.position(0)
+        for (i in 0 until 36) {
+            val vx = buf.get()
+            val vy = buf.get()
+            val vz = buf.get()
+            val localU = buf.get()
+            val localV = buf.get()
 
-        GLES20.glDisableVertexAttribArray(wfPosLoc)
+            val finalU = if (localU > 0.5f) uMax else uMin
+            val finalV = if (localV > 0.5f) vMax else vMin
+
+            tempBuf.put(vx)
+            tempBuf.put(vy)
+            tempBuf.put(vz)
+            tempBuf.put(finalU)
+            tempBuf.put(finalV)
+        }
+        tempBuf.position(0)
+
+        // Draw with voxel shader with blend mode
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+
+        GLES20.glUseProgram(programId)
+        GLES20.glUniformMatrix4fv(uMVPMatrixLoc, 1, false, mvpMatrix, 0)
+        GLES20.glUniform3f(uSunColorLoc, 1f, 1f, 1f)
+        GLES20.glUniform3f(uAmbientColorLoc, 1f, 1f, 1f)
+        GLES20.glUniform1f(uAlphaMultiplierLoc, 1.0f)
+        GLES20.glUniform1f(uFogStartLoc, 9999f)
+        GLES20.glUniform1f(uFogEndLoc, 10000f)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        GLES20.glUniform1i(uTextureLoc, 0)
+
+        val stride = 5 * 4
+        tempBuf.position(0)
+        GLES20.glEnableVertexAttribArray(aPositionLoc)
+        GLES20.glVertexAttribPointer(aPositionLoc, 3, GLES20.GL_FLOAT, false, stride, tempBuf)
+
+        tempBuf.position(3)
+        GLES20.glEnableVertexAttribArray(aTexCoordLoc)
+        GLES20.glVertexAttribPointer(aTexCoordLoc, 2, GLES20.GL_FLOAT, false, stride, tempBuf)
+
+        // Normal and AO can point to dummy static values
+        GLES20.glVertexAttrib3f(aNormalLoc, 0f, 1f, 0f)
+        GLES20.glVertexAttrib1f(aAOLoc, 1.0f)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 36)
+
+        GLES20.glDisableVertexAttribArray(aPositionLoc)
+        GLES20.glDisableVertexAttribArray(aTexCoordLoc)
+        GLES20.glDisable(GLES20.GL_BLEND)
     }
 
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {

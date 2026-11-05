@@ -3,6 +3,7 @@ package com.example.game.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -66,11 +67,24 @@ fun GameControlsOverlay(
     onOpenInventory: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    // Touch circle position in screen coordinates
+    // Touch circle state and position
     var touchPos by remember { mutableStateOf<Offset?>(null) }
     var isHoldingDown by remember { mutableStateOf(false) }
     var touchStartTime by remember { mutableLongStateOf(0L) }
     var lastLookPos by remember { mutableStateOf<Offset?>(null) }
+    var uiIsMining by remember { mutableStateOf(false) }
+    var uiMiningProgress by remember { mutableFloatStateOf(0f) }
+
+    // Synchronize UI mining state with OpenGL renderer
+    androidx.compose.runtime.DisposableEffect(renderer) {
+        renderer.onMiningProgress = { mining, progress ->
+            uiIsMining = mining
+            uiMiningProgress = progress
+        }
+        onDispose {
+            renderer.onMiningProgress = null
+        }
+    }
 
     val selectedBlock = hotbarSlots.getOrElse(selectedSlotIndex) { BlockType.AIR }
 
@@ -80,132 +94,151 @@ fun GameControlsOverlay(
             .testTag("game_controls_overlay")
     ) {
         // ---------------- 1. MCPE SCREEN TOUCH CONTROLLER (LOOK / TAP / MINE) ----------------
-        // Covers right side and middle, clear of D-Pad and bottom hotbar
+        // Covers game screen outside the D-Pad (200dp wide) and hotbar (80dp high)
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 180.dp, bottom = 70.dp) // Leave D-Pad and hotbar zones free
+                .padding(start = 200.dp, bottom = 80.dp)
                 .pointerInput(sensitivity, selectedBlock) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
+                    awaitPointerEventScope {
+                        while (true) {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val pointerId = down.id
                             touchStartTime = System.currentTimeMillis()
-                            touchPos = offset
-                            lastLookPos = offset
+                            val initialPos = down.position
+                            touchPos = initialPos
+                            lastLookPos = initialPos
                             isHoldingDown = true
 
-                            // If targeting a block, begin MCPE mining
-                            renderer.currentRaycastHit?.let { hit ->
-                                renderer.startMining(hit)
-                            }
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            val currentPos = change.position
-                            touchPos = currentPos
+                            // Calculate screen-space coordinates within the entire SurfaceView
+                            val padStartPx = 200.dp.toPx()
+                            val globalScreenX = initialPos.x + padStartPx
+                            val globalScreenY = initialPos.y
 
-                            val startP = lastLookPos ?: currentPos
-                            val deltaX = currentPos.x - startP.x
-                            val deltaY = currentPos.y - startP.y
-                            val distSq = deltaX * deltaX + deltaY * deltaY
-
-                            // If dragging significantly, it's a camera look gesture
-                            if (distSq > 36f) {
-                                renderer.stopMining()
-                                val rotX = dragAmount.x * 0.12f * sensitivity
-                                val rotY = -dragAmount.y * 0.12f * sensitivity
-                                player.rotate(rotX, rotY)
+                            // Direct 3D block raycast from the exact touch position
+                            val initialHit = renderer.raycastFromScreen(globalScreenX, globalScreenY)
+                            var didMine = false
+                            if (initialHit != null) {
+                                renderer.startMining(initialHit)
+                                didMine = true
+                                uiIsMining = true
+                                uiMiningProgress = 0f
                             }
-                            lastLookPos = currentPos
-                        },
-                        onDragEnd = {
-                            val elapsed = System.currentTimeMillis() - touchStartTime
-                            // Quick tap (< 220ms) with minimal drag -> Place Block
-                            if (elapsed < 220L) {
-                                renderer.currentRaycastHit?.let { hit ->
-                                    renderer.placeBlockAt(hit, selectedBlock)
-                                } ?: run {
-                                    // Empty hand punch swing
-                                    renderer.viewmodelRenderer.triggerSwing()
+
+                            var dragDistanceSq = 0f
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.find { it.id == pointerId } ?: break
+                                if (!change.pressed) {
+                                    // Pointer released!
+                                    val elapsed = System.currentTimeMillis() - touchStartTime
+
+                                    // If it was a quick tap with minimal finger movement (< 220ms and < 25px travel)
+                                    if (elapsed < 220L && dragDistanceSq < 625f) {
+                                        // Tap places a block on the touched face!
+                                        val tapHit = renderer.raycastFromScreen(globalScreenX, globalScreenY)
+                                        if (tapHit != null) {
+                                            renderer.placeBlockAt(tapHit, selectedBlock)
+                                        } else {
+                                            // Empty hand punch swing
+                                            renderer.viewmodelRenderer.triggerSwing()
+                                        }
+                                    }
+
+                                    renderer.stopMining()
+                                    uiIsMining = false
+                                    uiMiningProgress = 0f
+                                    touchPos = null
+                                    isHoldingDown = false
+                                    lastLookPos = null
+                                    break
                                 }
-                            }
-                            renderer.stopMining()
-                            touchPos = null
-                            isHoldingDown = false
-                            lastLookPos = null
-                        },
-                        onDragCancel = {
-                            renderer.stopMining()
-                            touchPos = null
-                            isHoldingDown = false
-                            lastLookPos = null
-                        }
-                    )
-                }
-                .pointerInput(selectedBlock) {
-                    detectTapGestures(
-                        onTap = {
-                            // Tap placing
-                            renderer.currentRaycastHit?.let { hit ->
-                                renderer.placeBlockAt(hit, selectedBlock)
-                            } ?: run {
-                                renderer.viewmodelRenderer.triggerSwing()
-                            }
-                        }
-                    )
-                }
-        )
 
-        // ---------------- 2. MCPE HOLLOW BREAKING CIRCLE (CENTER FILL) ----------------
-        // Appears at touch position when mining a block
-        if (renderer.isMining && touchPos != null) {
-            val pos = touchPos!!
-            val progress = renderer.miningProgress
-            val circleRadiusPx = 32.dp.value * 2.5f
+                                val currentPos = change.position
+                                touchPos = currentPos
+                                val deltaX = currentPos.x - initialPos.x
+                                val deltaY = currentPos.y - initialPos.y
+                                dragDistanceSq = deltaX * deltaX + deltaY * deltaY
 
-            Box(
-                modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            (pos.x - circleRadiusPx + 180.dp.roundToPx()).roundToInt(),
-                            (pos.y - circleRadiusPx).roundToInt()
-                        )
+                                val lastP = lastLookPos ?: currentPos
+                                val stepX = currentPos.x - lastP.x
+                                val stepY = currentPos.y - lastP.y
+
+                                // If user drags finger significantly (> 20px), switch from mining to looking
+                                if (dragDistanceSq > 400f) {
+                                    if (didMine) {
+                                        renderer.stopMining()
+                                        uiIsMining = false
+                                        uiMiningProgress = 0f
+                                        didMine = false
+                                    }
+                                    change.consume()
+                                    val rotX = stepX * 0.12f * sensitivity
+                                    val rotY = -stepY * 0.12f * sensitivity
+                                    player.rotate(rotX, rotY)
+                                }
+
+                                lastLookPos = currentPos
+                            }
+                        }
                     }
-                    .size(64.dp)
-            ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val maxRadius = size.width / 2f - 4f
+                }
+        ) {
+            // ---------------- 2. MCPE HOLLOW BREAKING & LOOK RETICLE CIRCLE (ENLARGED) ----------------
+            // Follows the touch position when touching, swiping to look, or mining/placing
+            if (isHoldingDown && touchPos != null) {
+                val pos = touchPos!!
+                val circleRadiusPx = 48.dp.value * 2.5f
 
-                    // Outer Hollow Circle Border
-                    drawCircle(
-                        color = Color.Black.copy(alpha = 0.45f),
-                        radius = maxRadius,
-                        center = center,
-                        style = Stroke(width = 4.5f)
-                    )
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.95f),
-                        radius = maxRadius,
-                        center = center,
-                        style = Stroke(width = 3.0f)
-                    )
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (pos.x - circleRadiusPx).roundToInt(),
+                                (pos.y - circleRadiusPx).roundToInt()
+                            )
+                        }
+                        .size(96.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        val maxRadius = size.width / 2f - 4f
 
-                    // Inner radial progress filling outward from the center
-                    val fillRadius = maxRadius * progress.coerceIn(0f, 1f)
-                    if (fillRadius > 1f) {
+                        // Outer Hollow Circle Border
                         drawCircle(
-                            color = Color.White.copy(alpha = 0.85f),
-                            radius = fillRadius,
+                            color = Color.Black.copy(alpha = 0.55f),
+                            radius = maxRadius,
+                            center = center,
+                            style = Stroke(width = 5.5f)
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.95f),
+                            radius = maxRadius,
+                            center = center,
+                            style = Stroke(width = 3.6f)
+                        )
+
+                        // If mining a block, fill from center outward
+                        if (uiIsMining || renderer.isMining) {
+                            val fillProgress = if (uiMiningProgress > 0f) uiMiningProgress else renderer.miningProgress
+                            val fillRadius = maxRadius * fillProgress.coerceIn(0f, 1f)
+                            if (fillRadius > 1f) {
+                                drawCircle(
+                                    color = Color.White.copy(alpha = 0.88f),
+                                    radius = fillRadius,
+                                    center = center
+                                )
+                            }
+                        }
+
+                        // Center focus dot
+                        drawCircle(
+                            color = Color.White,
+                            radius = 3.5f,
                             center = center
                         )
                     }
-
-                    // Center focus dot
-                    drawCircle(
-                        color = Color.White,
-                        radius = 2.5f,
-                        center = center
-                    )
                 }
             }
         }
@@ -238,11 +271,11 @@ fun GameControlsOverlay(
             )
         }
 
-        // ---------------- 5. REDESIGNED BEDROCK JUMP BUTTON (BOTTOM RIGHT) ----------------
+        // ---------------- 5. REDESIGNED BEDROCK JUMP BUTTON (HIGHER AND LEFT) ----------------
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 20.dp, bottom = 20.dp)
+                .padding(end = 68.dp, bottom = 84.dp)
         ) {
             BedrockJumpButton(
                 onClick = { player.inputJump = true },
@@ -343,7 +376,7 @@ private fun BedrockPauseButton(
 private fun BedrockCrossDPad(
     onMove: (forward: Float, right: Float) -> Unit
 ) {
-    val buttonSize = 42.dp
+    val buttonSize = 60.dp
     var activeDirection by remember { mutableStateOf<String?>(null) }
 
     fun processPosition(offset: Offset, sizePx: Float) {
@@ -353,7 +386,7 @@ private fun BedrockCrossDPad(
         val dist = sqrt(dx * dx + dy * dy)
 
         // Center button: passive anchor (jump removed)
-        if (dist < 26f) {
+        if (dist < 36f) {
             activeDirection = "CENTER"
             onMove(0f, 0f)
             return
@@ -497,7 +530,7 @@ private fun BedrockDPadSquare(
     ) {
         Text(
             text = symbol,
-            fontSize = if (symbol == "•") 18.sp else 13.sp,
+            fontSize = if (symbol == "•") 24.sp else 18.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White
         )

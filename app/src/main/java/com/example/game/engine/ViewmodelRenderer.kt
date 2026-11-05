@@ -87,19 +87,26 @@ class ViewmodelRenderer {
 
         val isAir = (heldBlock == BlockType.AIR)
 
-        // Base position in lower-right of screen
-        val posX = (if (isAir) 0.30f else 0.36f) + bobX
-        val posY = (if (isAir) -0.28f else -0.32f) + bobY + swingTransY
-        val posZ = (if (isAir) -0.55f else -0.65f) + swingTransZ
+        // Minecraft authentic first-person placement in lower-right viewport
+        // Empty fist is positioned so the player's forearm and hand clearly enter diagonally from the bottom-right corner.
+        val posX = (if (isAir) 0.22f else 0.26f) + bobX
+        val posY = (if (isAir) -0.15f else -0.17f) + bobY + swingTransY
+        val posZ = (if (isAir) -0.36f else -0.40f) + swingTransZ
 
         Matrix.translateM(viewmodelModel, 0, posX, posY, posZ)
 
-        // Isometric orientation (~30 deg yaw, ~15 deg pitch, ~-10 deg roll)
-        val basePitch = if (isAir) 22f else 15f
-        val baseYaw = if (isAir) -38f else -32f
-        Matrix.rotateM(viewmodelModel, 0, basePitch + swingRotX, 1f, 0f, 0f)
-        Matrix.rotateM(viewmodelModel, 0, baseYaw + swingRotY, 0f, 1f, 0f)
-        Matrix.rotateM(viewmodelModel, 0, -10f + bobRoll, 0f, 0f, 1f)
+        // Authentic Minecraft handheld item rotation:
+        if (isAir) {
+            // Steve bare punch arm: angled up-left towards crosshair
+            Matrix.rotateM(viewmodelModel, 0, 18f + swingRotX, 1f, 0f, 0f)
+            Matrix.rotateM(viewmodelModel, 0, -32f + swingRotY, 0f, 1f, 0f)
+            Matrix.rotateM(viewmodelModel, 0, 8f + bobRoll, 0f, 0f, 1f)
+        } else {
+            // Block held in right hand: ~42 deg yaw so top, front and side are all visible, 22 deg pitch upright
+            Matrix.rotateM(viewmodelModel, 0, 22f + swingRotX, 1f, 0f, 0f)
+            Matrix.rotateM(viewmodelModel, 0, -42f + swingRotY, 0f, 1f, 0f)
+            Matrix.rotateM(viewmodelModel, 0, 4f + bobRoll, 0f, 0f, 1f)
+        }
 
         // Compute MVP
         Matrix.multiplyMM(viewmodelMVP, 0, viewmodelProj, 0, viewmodelModel, 0)
@@ -119,6 +126,7 @@ class ViewmodelRenderer {
         }
 
         // 6. Draw with VoxelShader using exact environmental lighting from sky
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glUseProgram(shader.programId)
         GLES20.glUniformMatrix4fv(shader.uMVPMatrixLoc, 1, false, viewmodelMVP, 0)
         GLES20.glUniform3f(shader.uCameraPosLoc, 0f, 0f, 0f)
@@ -140,7 +148,7 @@ class ViewmodelRenderer {
             blockBuffer?.let { buf ->
                 drawBuffer(shader, buf, 36) // 6 faces * 2 tris * 3 verts = 36 verts
             }
-            // Draw arm holding the block
+            // Draw arm supporting the block
             armBuffer?.let { buf ->
                 drawBuffer(shader, buf, 72) // 2 segments (sleeve + hand) = 72 verts
             }
@@ -255,17 +263,17 @@ class ViewmodelRenderer {
      */
     private fun buildSteveArmMesh(isEmptyHand: Boolean): FloatBuffer {
         val list = ArrayList<Float>(72 * Chunk.FLOATS_PER_VERTEX)
-        val w = if (isEmptyHand) 0.09f else 0.08f
-        val h = if (isEmptyHand) 0.09f else 0.08f
-        val len = if (isEmptyHand) 0.38f else 0.35f
+        val w = if (isEmptyHand) 0.10f else 0.085f
+        val h = if (isEmptyHand) 0.10f else 0.085f
+        val len = if (isEmptyHand) 0.45f else 0.42f
 
-        val x0 = if (isEmptyHand) 0.02f else 0.05f
+        val x0 = if (isEmptyHand) -0.05f else 0.03f
         val x1 = x0 + w
-        val y0 = if (isEmptyHand) -0.28f else -0.32f
+        val y0 = if (isEmptyHand) -0.05f else -0.10f
         val y1 = y0 + h
-        val z0 = if (isEmptyHand) 0.16f else 0.12f
+        val z0 = if (isEmptyHand) 0.18f else 0.22f
         val z1 = z0 - len
-        val zSplit = z0 - len * 0.52f // Boundary between sleeve and bare forearm/hand
+        val zSplit = z0 - len * 0.48f // Boundary between sleeve and bare forearm/hand
 
         val sleeveUV = TextureAtlas.getTileUV(TextureAtlas.TILE_STEVE_SLEEVE)
         val skinUV = TextureAtlas.getTileUV(TextureAtlas.TILE_STEVE_SKIN)

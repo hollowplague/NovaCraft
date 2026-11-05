@@ -131,6 +131,9 @@ fun MinecraftGameApp(
     onVibrate: (Long) -> Unit,
     onSurfaceCreated: (GLSurfaceView) -> Unit
 ) {
+    // Top-level navigation: MAIN_MENU vs IN_GAME
+    var isInGame by remember { mutableStateOf(false) }
+
     // Hotbar state (9 slots, starts empty in 0.2.5)
     var hotbarSlots by remember { mutableStateOf(List(9) { BlockType.AIR }) }
     var selectedSlotIndex by remember { mutableIntStateOf(0) }
@@ -144,6 +147,17 @@ fun MinecraftGameApp(
     var sensitivity by remember { mutableFloatStateOf(1.2f) }
     var fogDistance by remember { mutableFloatStateOf(55f) }
     var hapticsEnabled by remember { mutableStateOf(true) }
+
+    // Handle back button when in-game to pause or return to menu
+    androidx.activity.compose.BackHandler(enabled = isInGame) {
+        if (showInventoryDialog) {
+            showInventoryDialog = false
+        } else if (showSettingsDialog) {
+            showSettingsDialog = false
+        } else {
+            showSettingsDialog = true
+        }
+    }
 
     // Hook renderer haptics
     remember {
@@ -161,7 +175,7 @@ fun MinecraftGameApp(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ---------------- 1. 3D OPENGL SURFACE VIEW ----------------
+        // ---------------- 1. 3D OPENGL SURFACE VIEW (Always active underneath) ----------------
         AndroidView(
             factory = { context ->
                 GLSurfaceView(context).apply {
@@ -176,38 +190,46 @@ fun MinecraftGameApp(
             modifier = Modifier.fillMaxSize()
         )
 
-        // ---------------- 2. JETPACK COMPOSE TOUCH HUD ----------------
-        GameControlsOverlay(
-            player = player,
-            renderer = renderer,
-            sensitivity = sensitivity,
-            hotbarSlots = hotbarSlots,
-            selectedSlotIndex = selectedSlotIndex,
-            onSelectSlot = { index ->
-                selectedSlotIndex = index
-                renderer.currentHeldBlock = hotbarSlots.getOrElse(index) { BlockType.AIR }
-            },
-            onOpenInventory = { showInventoryDialog = true },
-            onOpenSettings = { showSettingsDialog = true }
-        )
-
-        // ---------------- 3. CREATIVE INVENTORY PALETTE MODAL ----------------
-        if (showInventoryDialog) {
-            CreativeInventoryDialog(
-                selectedHotbarIndex = selectedSlotIndex,
-                onSelectBlock = { pickedBlock ->
-                    val updated = hotbarSlots.toMutableList()
-                    if (selectedSlotIndex in updated.indices) {
-                        updated[selectedSlotIndex] = pickedBlock
-                        hotbarSlots = updated
-                        renderer.currentHeldBlock = pickedBlock
-                    }
+        if (isInGame) {
+            // ---------------- 2. JETPACK COMPOSE TOUCH HUD ----------------
+            GameControlsOverlay(
+                player = player,
+                renderer = renderer,
+                sensitivity = sensitivity,
+                hotbarSlots = hotbarSlots,
+                selectedSlotIndex = selectedSlotIndex,
+                onSelectSlot = { index ->
+                    selectedSlotIndex = index
+                    renderer.currentHeldBlock = hotbarSlots.getOrElse(index) { BlockType.AIR }
                 },
-                onDismiss = { showInventoryDialog = false }
+                onOpenInventory = { showInventoryDialog = true },
+                onOpenSettings = { showSettingsDialog = true }
+            )
+
+            // ---------------- 3. CREATIVE INVENTORY PALETTE MODAL ----------------
+            if (showInventoryDialog) {
+                CreativeInventoryDialog(
+                    selectedHotbarIndex = selectedSlotIndex,
+                    onSelectBlock = { pickedBlock ->
+                        val updated = hotbarSlots.toMutableList()
+                        if (selectedSlotIndex in updated.indices) {
+                            updated[selectedSlotIndex] = pickedBlock
+                            hotbarSlots = updated
+                            renderer.currentHeldBlock = pickedBlock
+                        }
+                    },
+                    onDismiss = { showInventoryDialog = false }
+                )
+            }
+        } else {
+            // ---------------- 4. CLASSIC BEDROCK TITLE SCREEN MAIN MENU ----------------
+            com.example.game.ui.MainMenuScreen(
+                onPlayGame = { isInGame = true },
+                onOpenSettings = { showSettingsDialog = true }
             )
         }
 
-        // ---------------- 4. SETTINGS MODAL ----------------
+        // ---------------- 5. SETTINGS MODAL ----------------
         if (showSettingsDialog) {
             GameSettingsDialog(
                 fov = fov,
@@ -231,6 +253,9 @@ fun MinecraftGameApp(
                     player.posY = newTopY + 1.0f
                     player.posZ = 0f
                 },
+                onQuitToTitle = if (isInGame) {
+                    { isInGame = false }
+                } else null,
                 onDismiss = { showSettingsDialog = false }
             )
         }

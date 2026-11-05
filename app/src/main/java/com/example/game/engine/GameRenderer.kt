@@ -8,6 +8,7 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * High-performance OpenGL ES 2.0 Renderer for Minecraft Kotlin Edition.
@@ -53,6 +54,7 @@ class GameRenderer(
     @Volatile var miningProgress = 0f // 0.0 to 1.0
     @Volatile var miningStage = 0 // 0 to 9
     @Volatile var currentMiningHit: RaycastHit? = null
+    var onMiningProgress: ((Boolean, Float) -> Unit)? = null
     private var currentMiningTime = 0f
     private var swingCooldown = 0f
 
@@ -63,6 +65,7 @@ class GameRenderer(
         currentMiningTime = 0f
         miningProgress = 0f
         miningStage = 0
+        onMiningProgress?.invoke(true, 0f)
     }
 
     fun stopMining() {
@@ -71,6 +74,7 @@ class GameRenderer(
         currentMiningTime = 0f
         miningProgress = 0f
         miningStage = 0
+        onMiningProgress?.invoke(false, 0f)
     }
 
     fun placeBlockAt(hit: RaycastHit, block: BlockType) {
@@ -80,11 +84,26 @@ class GameRenderer(
         val py = hit.hitY + hit.normalY
         val pz = hit.hitZ + hit.normalZ
 
-        val insidePlayer = (px == player.posX.toInt() || px == (player.posX + 0.3f).toInt()) &&
-                (py == player.posY.toInt() || py == (player.posY + 1.0f).toInt()) &&
-                (pz == player.posZ.toInt() || pz == (player.posZ + 0.3f).toInt())
+        // Check if placed block would intersect player's body AABB
+        val pMinX = player.posX - player.HALF_WIDTH
+        val pMaxX = player.posX + player.HALF_WIDTH
+        val pMinY = player.posY
+        val pMaxY = player.posY + player.PLAYER_HEIGHT
+        val pMinZ = player.posZ - player.HALF_WIDTH
+        val pMaxZ = player.posZ + player.HALF_WIDTH
 
-        if (!insidePlayer && py in 0 until Chunk.HEIGHT) {
+        val bMinX = px.toFloat()
+        val bMaxX = px + 1.0f
+        val bMinY = py.toFloat()
+        val bMaxY = py + 1.0f
+        val bMinZ = pz.toFloat()
+        val bMaxZ = pz + 1.0f
+
+        val overlaps = (pMinX < bMaxX && pMaxX > bMinX) &&
+                (pMinY < bMaxY && pMaxY > bMinY) &&
+                (pMinZ < bMaxZ && pMaxZ > bMinZ)
+
+        if (!overlaps && py in 0 until Chunk.HEIGHT) {
             world.setBlock(px, py, pz, block)
             onBlockPlaced?.invoke()
         }
@@ -92,7 +111,12 @@ class GameRenderer(
 
     // First-person 3D hand & held block viewmodel
     val viewmodelRenderer = ViewmodelRenderer()
+    val particleSystem = ParticleSystem()
     private var currentAspect = 1.0f
+    @Volatile var viewportWidth = 1
+    @Volatile var viewportHeight = 1
+    private val invertedMvpMatrix = FloatArray(16)
+    private val matrixLock = Any()
 
     // Callbacks to UI for haptics and sound effects
     var onBlockMined: (() -> Unit)? = null
@@ -112,17 +136,77 @@ class GameRenderer(
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        viewportWidth = width.coerceAtLeast(1)
+        viewportHeight = height.coerceAtLeast(1)
         GLES20.glViewport(0, 0, width, height)
-        currentAspect = width.toFloat() / height.coerceAtLeast(1).toFloat()
+        currentAspect = viewportWidth.toFloat() / viewportHeight.toFloat()
         Matrix.perspectiveM(projectionMatrix, 0, fieldOfView, currentAspect, 0.1f, 150.0f)
     }
 
     fun updateFov(fov: Float, width: Int, height: Int) {
         fieldOfView = fov
         if (width > 0 && height > 0) {
+            viewportWidth = width
+            viewportHeight = height
             currentAspect = width.toFloat() / height.toFloat()
             Matrix.perspectiveM(projectionMatrix, 0, fieldOfView, currentAspect, 0.1f, 150.0f)
         }
+    }
+
+    /**
+     * Unprojects screen coordinates (x, y) into a 3D ray in world space,
+     * and performs a DDA raycast into the voxel world.
+     * This provides true MCPE direct block tapping and holding!
+     */
+    fun raycastFromScreen(screenX: Float, screenY: Float, width: Int = viewportWidth, height: Int = viewportHeight): RaycastHit? {
+        val w = if (width > 0) width else viewportWidth
+        val h = if (height > 0) height else viewportHeight
+        if (w <= 0 || h <= 0) return null
+
+        // Normalized Device Coordinates (-1..1)
+        val ndcX = (2.0f * screenX) / w.toFloat() - 1.0f
+        val ndcY = 1.0f - (2.0f * screenY) / h.toFloat()
+
+        val invMvp = FloatArray(16)
+        synchronized(matrixLock) {
+            System.arraycopy(invertedMvpMatrix, 0, invMvp, 0, 16)
+        }
+
+        val nearPoint = floatArrayOf(ndcX, ndcY, -1.0f, 1.0f)
+        val farPoint = floatArrayOf(ndcX, ndcY, 1.0f, 1.0f)
+
+        val unprojectedNear = FloatArray(4)
+        val unprojectedFar = FloatArray(4)
+
+        Matrix.multiplyMV(unprojectedNear, 0, invMvp, 0, nearPoint, 0)
+        Matrix.multiplyMV(unprojectedFar, 0, invMvp, 0, farPoint, 0)
+
+        if (unprojectedNear[3] == 0f || unprojectedFar[3] == 0f) return null
+
+        val nearX = unprojectedNear[0] / unprojectedNear[3]
+        val nearY = unprojectedNear[1] / unprojectedNear[3]
+        val nearZ = unprojectedNear[2] / unprojectedNear[3]
+
+        val farX = unprojectedFar[0] / unprojectedFar[3]
+        val farY = unprojectedFar[1] / unprojectedFar[3]
+        val farZ = unprojectedFar[2] / unprojectedFar[3]
+
+        var dirX = farX - nearX
+        var dirY = farY - nearY
+        var dirZ = farZ - nearZ
+
+        val len = sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ)
+        if (len < 0.0001f) return null
+
+        dirX /= len
+        dirY /= len
+        dirZ /= len
+
+        return world.raycast(
+            player.eyeX, player.eyeY, player.eyeZ,
+            dirX, dirY, dirZ,
+            maxDistance = 6.5f
+        )
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -142,8 +226,9 @@ class GameRenderer(
         // Continuous 10-minute automatic day/night cycle (600s)
         timeOfDay = (timeOfDay + deltaSec / 600.0f) % 1.0f
 
-        // Update player movement
+        // Update player movement & particle physics
         player.update(world, deltaSec)
+        particleSystem.update(deltaSec, world)
 
         // Process raycasting from player eye along look vector
         val forward = player.getForwardVector()
@@ -154,26 +239,38 @@ class GameRenderer(
         )
         currentRaycastHit = hit
 
-        // Process progressive MCPE block destruction
+        // Process progressive MCPE block destruction on the targeted block
         if (isMining) {
             val targetHit = currentMiningHit
-            if (targetHit != null && hit != null &&
-                targetHit.hitX == hit.hitX && targetHit.hitY == hit.hitY && targetHit.hitZ == hit.hitZ
-            ) {
-                swingCooldown += deltaSec
-                if (swingCooldown >= 0.22f) {
-                    swingCooldown = 0f
-                    viewmodelRenderer.triggerSwing()
-                }
+            if (targetHit != null) {
+                val currentBlock = world.getBlock(targetHit.hitX, targetHit.hitY, targetHit.hitZ)
+                // Check if block still exists and player is within reach
+                val dx = (targetHit.hitX + 0.5f) - player.eyeX
+                val dy = (targetHit.hitY + 0.5f) - player.eyeY
+                val dz = (targetHit.hitZ + 0.5f) - player.eyeZ
+                val distSq = dx * dx + dy * dy + dz * dz
 
-                currentMiningTime += deltaSec
-                val maxDuration = targetHit.block.breakTimeSec
-                miningProgress = (currentMiningTime / maxDuration).coerceIn(0f, 1f)
-                miningStage = (miningProgress * 9.99f).toInt().coerceIn(0, 9)
+                if (currentBlock != BlockType.AIR && distSq <= 7.0f * 7.0f) {
+                    swingCooldown += deltaSec
+                    if (swingCooldown >= 0.22f) {
+                        swingCooldown = 0f
+                        viewmodelRenderer.triggerSwing()
+                    }
 
-                if (miningProgress >= 1.0f) {
-                    world.setBlock(targetHit.hitX, targetHit.hitY, targetHit.hitZ, BlockType.AIR)
-                    onBlockMined?.invoke()
+                    currentMiningTime += deltaSec
+                    val maxDuration = targetHit.block.breakTimeSec
+                    miningProgress = (currentMiningTime / maxDuration).coerceIn(0f, 1f)
+                    miningStage = (miningProgress * 9.99f).toInt().coerceIn(0, 9)
+                    onMiningProgress?.invoke(true, miningProgress)
+
+                    if (miningProgress >= 1.0f) {
+                        val brokenBlock = targetHit.block
+                        world.setBlock(targetHit.hitX, targetHit.hitY, targetHit.hitZ, BlockType.AIR)
+                        particleSystem.spawnBlockBreak(targetHit.hitX.toFloat(), targetHit.hitY.toFloat(), targetHit.hitZ.toFloat(), brokenBlock)
+                        onBlockMined?.invoke()
+                        stopMining()
+                    }
+                } else {
                     stopMining()
                 }
             } else {
@@ -196,8 +293,11 @@ class GameRenderer(
             0f, 1f, 0f
         )
 
-        // Compute MVP matrix
+        // Compute MVP matrix and invert for screen-space touch raycasting
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
+        synchronized(matrixLock) {
+            Matrix.invertM(invertedMvpMatrix, 0, mvpMatrix, 0)
+        }
 
         // Sunlight direction rotates with time of day
         val sunAngle = (timeOfDay * 2.0 * Math.PI).toFloat()
@@ -248,15 +348,23 @@ class GameRenderer(
             drawChunkBuffer(buf, count)
         }
 
-        // ---------------- PASS 2: SELECTION OUTLINE & BREAKING CRACKS ----------------
-        hit?.let {
-            Matrix.translateM(tempMatrix, 0, mvpMatrix, 0, it.hitX.toFloat(), it.hitY.toFloat(), it.hitZ.toFloat())
-            shader.drawSelectionBox(tempMatrix)
-
-            if (isMining && currentMiningHit?.hitX == it.hitX && currentMiningHit?.hitY == it.hitY && currentMiningHit?.hitZ == it.hitZ) {
-                shader.drawBreakingCracks(tempMatrix, miningStage)
+        // ---------------- PASS 2: BREAKING CRACKS ON TOUCH-MINED BLOCK ----------------
+        // Note: Crosshair selection box is removed for authentic MCPE direct touch controls.
+        if (isMining) {
+            currentMiningHit?.let { target ->
+                Matrix.translateM(tempMatrix, 0, mvpMatrix, 0, target.hitX.toFloat(), target.hitY.toFloat(), target.hitZ.toFloat())
+                shader.drawBreakingCracks(tempMatrix, textureId, miningStage)
             }
         }
+
+        // ---------------- PASS 2.5: 3D BLOCK DEBRIS PARTICLES BURST ----------------
+        GLES20.glUseProgram(shader.programId)
+        GLES20.glUniformMatrix4fv(shader.uMVPMatrixLoc, 1, false, mvpMatrix, 0)
+        GLES20.glUniform1f(shader.uAlphaMultiplierLoc, 1.0f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        GLES20.glUniform1i(shader.uTextureLoc, 0)
+        particleSystem.render(shader)
 
         // ---------------- PASS 3: TRANSLUCENT VOXELS (WATER, GLASS) ----------------
         GLES20.glEnable(GLES20.GL_BLEND)

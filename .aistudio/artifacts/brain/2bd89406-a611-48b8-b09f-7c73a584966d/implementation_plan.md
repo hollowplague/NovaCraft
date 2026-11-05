@@ -1,124 +1,67 @@
-# KotlinCraft 0.2.5: MCPE Touch Controls & Destruction Mechanics
+# Implementation Plan: NovaCraft 1.0.5 — Visible POV Hand, Destroy Particles & Release APK
 
-Plan for **Update 0.2.5**, transitioning KotlinCraft to classic Pocket Edition (MCPE) touch mechanics: deleting the crosshair and separate break/place buttons, introducing the hollow touch circle with radial progress fill and block hardness, progressive block cracking animations, smooth auto-jump, an authentic Bedrock settings menu, and a clean immersive HUD with empty starter hotbar.
-
-### User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following design choices were confirmed in Phase 1 clarifying answers and will be implemented upon approval:
-
-- **Confirmed Decision 1 (Touch Controls)**: Crosshair and manual Break/Place buttons are removed. Touching a block taps to place, holding initiates mining with the MCPE hollow circle, and swiping in empty areas looks around.
-- **Confirmed Decision 2 (Auto-Jump)**: Player automatically and smoothly steps up single-block obstacles while walking forward without needing to press jump.
-- **Confirmed Decision 3 (Hotbar Setup)**: All 9 hotbar slots start completely empty (`AIR`), ready to be populated from the Creative Inventory.
-
----
-
-### 1. Overview & Core Concept
-
-- **What It Delivers**:
-  1. **Classic MCPE Touch Interaction**: Crosshair removed. Tap on a block in the 3D world to place currently held block; press and hold to display the animated MCPE hollow circle that fills from the center as the block is mined.
-  2. **Block Hardness Cooldowns**: Blocks have authentic destruction times (e.g. Leaves 0.3s, Dirt 0.7s, Wood 1.8s, Stone 2.2s).
-  3. **Progressive Breaking Cracks**: Multi-stage cracking lines rendered on the target block face as it takes damage.
-  4. **Smooth Auto-Jump**: Smooth step-up physics when walking against 1-block terrain elevation.
-  5. **Redesigned Bedrock Jump Button**: Dedicated square stone button on bottom-right with iconic jump chevron.
-  6. **Clean HUD**: Removed top-left coordinates/FPS and crosshair for a cinematic, uncluttered view.
-  7. **Redesigned Settings Menu**: Bedrock stone aesthetic with sliders for FOV and sensitivity; removed "Invert Y" and "Fly Mode".
-  8. **D-Pad Center Jump Removed**: D-pad center button is a passive visual anchor; jumping is handled by the dedicated Jump button and auto-jump.
-  9. **Empty Hotbar & 0.2.5 Release**: Starts with 9 empty slots; version bumped to `0.2.5` and exported to `ApkCraft/kotlincraft-0.2.5.apk`.
+Deliver the **NovaCraft 1.0.5 Update** featuring:
+1. **Fully Visible First-Person POV Hand**:
+   - Fix the viewmodel projection matrix and arm geometry in `ViewmodelRenderer.kt`.
+   - Ensure Steve's forearm (cyan sleeve) and hand (peach fist) enter from the bottom-right corner and extend into clear view when empty or holding items, with walking bobbing and punch swings.
+2. **Block Destruction Particles (16 Debris Cubes with Physics)**:
+   - When a block breaks, spawn 16 small debris particles centered at the destroyed voxel.
+   - Debris particles sample the destroyed block's texture colors, burst outward in 3D with random trajectories ($v_x, v_y, v_z$), and fall under gravity with ground bounce/fade.
+   - Render particles efficiently in a dedicated OpenGL pass using instanced/batched quads.
+3. **1.0.5 Release Build & Export**:
+   - Update `versionCode = 6` and `versionName = "1.0.5"` in `app/build.gradle.kts`.
+   - Update title version in `MainMenuScreen.kt` to `v1.0.5`.
+   - Build signed release APK and export to `ApkCraft/novacraft-1.0.5.apk`.
 
 ---
 
-### 2. User Experience & Visual Design
+### Technical Architecture & Changes
 
-#### HUD Layout (Update 0.2.5)
-```
-┌────────────────────────────────────────────────────────┐
-│                                            [ ❚❚ Pause ]│
-│                                                        │
-│                  (⭕ Hollow Circle)                    │
-│                [Fills from center...]                  │
-│                                                        │
-│                                                        │
-│      ▲                                                 │
-│   ◄ [•] ►                                      [ ▲ ]   │
-│      ▼                                         Jump    │
-│               [ · · · · · · · · · ••• ]                │
-│                 Empty Bedrock Hotbar                   │
-└────────────────────────────────────────────────────────┘
-```
+#### 1. `ViewmodelRenderer.kt` (POV Hand Visibility)
+- **Problem**: Steve's hand coordinates were translated too far down/right (`posX = 0.28f, posY = -0.22f, posZ = -0.48f`), and the arm cuboid was constructed with negative $Z$ pointing away from the camera while the model was rotated, placing the hand below the bottom screen crop.
+- **Fix**:
+  - Re-anchor Steve's arm:
+    - Base position: `posX = 0.22f, posY = -0.16f, posZ = -0.38f`.
+    - Forearm starts at bottom-right corner of the viewport and angles forward-left toward the screen center.
+    - Sleeve segment: cyan `#00A8A8` cuboid.
+    - Fist segment: peach `#C88E68` cuboid.
+    - When holding a block: block rests cleanly in the palm/fingers of the hand.
+    - When empty: hand forms a classic Steve punch fist.
+  - Disable face culling during viewmodel pass (`GLES20.glDisable(GLES20.GL_CULL_FACE)`) to ensure all faces of the arm are always rendered.
 
-- **Hollow Touch Circle**: When holding a block to mine, a circular ring (`#FFFFFF` with subtle drop shadow) appears at the touch point. An inner disc expands outward from the center proportional to destruction progress `0.0 .. 1.0`.
-- **Breaking Animation**: The targeted block face renders cracking patterns that intensify through 10 stages (0 to 9) before popping.
-- **Clean Horizon**: No crosshair or text chips blocking the view.
+#### 2. `ParticleSystem.kt` & `GameRenderer.kt` (Block Destroy Particles)
+- Create `com.example.game.engine.ParticleSystem.kt`:
+  - `Particle(x, y, z, vx, vy, vz, size, colorR, colorG, colorB, maxLife, currentLife)`
+  - `spawnBlockBreak(blockX, blockY, blockZ, blockType)`:
+    - Spawns 16 debris particles from the broken voxel.
+    - Particles burst outward in all directions with random velocities:
+      $$v_x \in [-1.8, 1.8], \quad v_y \in [1.5, 4.0], \quad v_z \in [-1.8, 1.8]$$
+    - Gravity: $g = -9.8\text{ m/s}^2$.
+    - Size: $0.08\text{m}$ mini-cubes.
+    - Colors sampled directly from the block's texture palette (e.g. grass green + dirt brown for grass, wood brown for logs, gray for stone).
+  - `render(mvpMatrix, shader)`:
+    - Renders all active debris particles as 3D camera-facing billboards/mini-cubes with fading alpha as lifetime approaches zero.
+- Wire into `GameRenderer.kt`:
+  - In `onDrawFrame`, update particles with `deltaSec`.
+  - When `miningProgress >= 1.0f` breaks a block: call `particleSystem.spawnBlockBreak(...)`.
+  - Render particles after chunk rendering in `PASS 2.5`.
 
----
-
-### 3. Technical Architecture & Data Strategy
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                    KotlinCraft 0.2.5 Touch & Physics Pipeline                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ 1. Player.kt                                                                 │
-│    └── Smooth auto-jump: checks block at foot vs knee level and lifts player │
-│                                                                              │
-│ 2. GameRenderer.kt                                                           │
-│    ├── Raycasting directly from touch screen coordinates (screenX, screenY)  │
-│    ├── Destruction timer & stage tracker (0..9) based on BlockType hardness │
-│    └── Cracking wireframe/crack overlay pass on damaged block face           │
-│                                                                              │
-│ 3. GameControlsOverlay.kt                                                    │
-│    ├── Touch listener: tap -> placeBlock(), hold -> mineBlock()              │
-│    ├── Canvas rendering of MCPE Hollow Circle with center radial fill       │
-│    ├── Redesigned Jump button on bottom right                                │
-│    └── Removed top-left coordinates, crosshair, break/place buttons          │
-│                                                                              │
-│ 4. GameSettingsDialog.kt                                                     │
-│    └── Removed Invert Y & Fly; authentic Minecraft pause layout             │
-│                                                                              │
-│ 5. MainActivity.kt                                                           │
-│    ├── Default hotbar: 9 x BlockType.AIR                                     │
-│    └── Hooking touch interaction into GameRenderer                           │
-│                                                                              │
-│ 6. app/build.gradle.kts                                                      │
-│    └── versionCode=4, versionName="0.2.5" -> ApkCraft/kotlincraft-0.2.5.apk  │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-#### Detailed Component Changes:
-
-1. **Touch Interaction & Hollow Circle (`GameControlsOverlay.kt`)**:
-   - Replace look drag area with combined Look/Tap/Hold touch detector:
-     - Short tap (< 250ms) on a block places the held block against that face.
-     - Hold (> 250ms) starts mining cooldown; renders the hollow circle at touch coordinate `(touchX, touchY)` with expanding inner progress circle.
-     - Dragging your finger rotates the camera if not holding a block.
-2. **Block Cracking Shader Pass (`GameRenderer.kt`, `VoxelShader.kt`)**:
-   - `blockHardness(type)`: Dirt/Sand (0.6s), Wood (1.6s), Stone (2.0s), Leaves (0.3s), Glass (0.4s).
-   - Draw procedural cracking lines or overlay on the damaged block face during mining.
-3. **Smooth Auto-Jump (`Player.kt`)**:
-   - In `Player.update()`: when moving forward (`velX != 0` or `velZ != 0`), inspect block ahead at foot level. If solid and space above is empty, smoothly elevate `posY += 1.0f` with positive vertical velocity.
-4. **Settings Dialog (`GameSettingsDialog.kt`)**:
-   - Bedrock stone gray dialog with "Resume Game", "Sensitivity", "FOV", and "Haptic Feedback".
-   - Completely removes "Invert Y" and "Fly Mode".
-5. **Initial Hotbar (`MainActivity.kt`)**:
-   - Set initial `hotbarSlots = List(9) { BlockType.AIR }`.
-6. **Packaging**:
-   - Update `app/build.gradle.kts` to `0.2.5` (versionCode 4).
-   - Build signed release APK and export to `ApkCraft/kotlincraft-0.2.5.apk`.
+#### 3. Version Bump & APK Release
+- In `app/build.gradle.kts`:
+  - `versionCode = 6`
+  - `versionName = "1.0.5"`
+- In `MainMenuScreen.kt`:
+  - Update version string to `NovaCraft v1.0.5 • Infinite Creative`.
+- Run Gradle `assembleRelease` with keystore credentials:
+  - Copy `app/build/outputs/apk/release/app-release.apk` to `ApkCraft/novacraft-1.0.5.apk`.
+  - Ensure file permissions `644`.
 
 ---
 
-### 4. Technical Execution Steps (Upon Approval)
-
-1. **Physics & Engine**:
-   - Implement smooth auto-jump in `Player.kt`.
-   - Implement block hardness, cracking progress, and touch raycasting in `GameRenderer.kt` and `VoxelShader.kt`.
-2. **HUD & Controls**:
-   - Overhaul `GameControlsOverlay.kt`: remove crosshair, coordinates, and break/place buttons; add MCPE hollow circle with center fill and redesigned Bedrock jump button; disable jump on D-pad center.
-   - Clean up `GameSettingsDialog.kt`: remove Invert Y and Fly mode.
-   - Update `MainActivity.kt` with empty starter hotbar and touch hooks.
-3. **Build & Export**:
-   - Bump version to `0.2.5` in `app/build.gradle.kts`.
-   - Compile signed release APK to `ApkCraft/kotlincraft-0.2.5.apk`.
-4. **Verification**:
-   - Verify with `compile_applet` and check files in `ApkCraft/`.
+### Verification Checklist
+- [ ] Steve's first-person arm with cyan sleeve and peach fist is clearly visible in the lower right when holding an empty slot (`AIR`).
+- [ ] When holding a block, the hand supports the block at a natural angle.
+- [ ] Destroying any block produces 16 flying debris particles matching the block's color that scatter and fall with gravity.
+- [ ] Main menu displays `v1.0.5`.
+- [ ] `compile_applet` succeeds without errors.
+- [ ] Signed release APK built and exported to `ApkCraft/novacraft-1.0.5.apk`.

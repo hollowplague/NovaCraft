@@ -18,6 +18,7 @@ object TextureAtlas {
 
     const val TILE_STEVE_SLEEVE = 16
     const val TILE_STEVE_SKIN = 17
+    const val TILE_CRACK_START = 20 // 20..29: 10 authentic MCPE destruction crack stages
 
     private var cachedBitmap: Bitmap? = null
 
@@ -54,7 +55,9 @@ object TextureAtlas {
         val col = tileIndex % ATLAS_GRID_SIZE
         val row = tileIndex / ATLAS_GRID_SIZE
         val step = 1.0f / ATLAS_GRID_SIZE
-        val subTexel = 0.5f / ATLAS_SIZE // Sub-texel inset to prevent border bleeding
+        // Use microscopic epsilon (< 0.05 texel) only to avoid floating point precision overflow,
+        // ensuring full 16x16 pixels with no half-pixel corner clipping!
+        val subTexel = 0.05f / ATLAS_SIZE
 
         val uMin = col * step + subTexel
         val vMin = row * step + subTexel
@@ -68,7 +71,7 @@ object TextureAtlas {
         val bmp = Bitmap.createBitmap(ATLAS_SIZE, ATLAS_SIZE, Bitmap.Config.ARGB_8888)
         val pixels = IntArray(ATLAS_SIZE * ATLAS_SIZE)
 
-        for (tileIndex in 0 until 18) {
+        for (tileIndex in 0 until 30) {
             val tilePixels = generateTilePixels(tileIndex)
             val tileCol = tileIndex % ATLAS_GRID_SIZE
             val tileRow = tileIndex / ATLAS_GRID_SIZE
@@ -86,6 +89,14 @@ object TextureAtlas {
 
         bmp.setPixels(pixels, 0, ATLAS_SIZE, 0, 0, ATLAS_SIZE, ATLAS_SIZE)
         return bmp
+    }
+
+    private val cachedTilePixels = HashMap<Int, IntArray>()
+
+    fun getTilePixels(tileIndex: Int): IntArray {
+        return cachedTilePixels.getOrPut(tileIndex) {
+            generateTilePixels(tileIndex)
+        }
     }
 
     private fun generateTilePixels(tileIndex: Int): IntArray {
@@ -420,6 +431,51 @@ object TextureAtlas {
                             y in 12..14 && x in 4..11 -> darkSkin // Palm / hand shading
                             (x + y) % 4 == 0 -> lightSkin
                             else -> baseSkin
+                        }
+                    }
+                }
+            }
+            in 20..29 -> { // 20..29: Authentic Minecraft destroy_stage_0 through destroy_stage_9
+                val stage = tileIndex - 20 // 0 to 9
+                // Authentic Minecraft black crack lines with subtle alpha edges
+                val crackBlack = Color.argb(220, 20, 20, 20)
+                val crackShadow = Color.argb(140, 10, 10, 10)
+                val transparent = Color.argb(0, 0, 0, 0)
+
+                // Fill with transparency initially
+                for (i in p.indices) p[i] = transparent
+
+                // Spiderweb crack branching pattern from center (8, 8)
+                val branches = listOf(
+                    // branch: points (x, y) with the stage at which they appear
+                    Pair(8, 8) to 0, Pair(7, 7) to 0, Pair(9, 7) to 0, Pair(8, 9) to 0,
+                    Pair(6, 6) to 1, Pair(10, 6) to 1, Pair(7, 10) to 1, Pair(9, 10) to 1,
+                    Pair(5, 5) to 2, Pair(6, 4) to 2, Pair(11, 5) to 2, Pair(10, 4) to 2,
+                    Pair(6, 11) to 2, Pair(7, 12) to 2, Pair(10, 11) to 2, Pair(11, 12) to 2,
+                    Pair(4, 4) to 3, Pair(5, 3) to 3, Pair(12, 4) to 3, Pair(11, 3) to 3,
+                    Pair(5, 12) to 3, Pair(6, 13) to 3, Pair(12, 11) to 3, Pair(13, 10) to 3,
+                    Pair(3, 3) to 4, Pair(4, 2) to 4, Pair(13, 3) to 4, Pair(12, 2) to 4,
+                    Pair(4, 13) to 4, Pair(5, 14) to 4, Pair(13, 12) to 4, Pair(14, 11) to 4,
+                    Pair(2, 2) to 5, Pair(3, 1) to 5, Pair(14, 2) to 5, Pair(13, 1) to 5,
+                    Pair(3, 14) to 5, Pair(4, 15) to 5, Pair(14, 13) to 5, Pair(15, 12) to 5,
+                    Pair(1, 1) to 6, Pair(2, 0) to 6, Pair(15, 1) to 6, Pair(14, 0) to 6,
+                    Pair(2, 15) to 6, Pair(8, 5) to 6, Pair(8, 11) to 6, Pair(5, 8) to 6, Pair(11, 8) to 6,
+                    Pair(0, 0) to 7, Pair(15, 0) to 7, Pair(0, 15) to 7, Pair(15, 15) to 7,
+                    Pair(8, 3) to 7, Pair(8, 13) to 7, Pair(3, 8) to 7, Pair(13, 8) to 7,
+                    Pair(1, 8) to 8, Pair(14, 8) to 8, Pair(8, 1) to 8, Pair(8, 14) to 8,
+                    Pair(4, 7) to 8, Pair(12, 7) to 8, Pair(7, 4) to 8, Pair(7, 12) to 8,
+                    Pair(0, 8) to 9, Pair(15, 8) to 9, Pair(8, 0) to 9, Pair(8, 15) to 9,
+                    Pair(3, 6) to 9, Pair(12, 6) to 9, Pair(6, 3) to 9, Pair(6, 12) to 9
+                )
+
+                for ((pt, reqStage) in branches) {
+                    if (stage >= reqStage) {
+                        val (x, y) = pt
+                        if (x in 0 until 16 && y in 0 until 16) {
+                            p[y * 16 + x] = crackBlack
+                            // Add adjacent translucent shadow to thicken crack
+                            if (x + 1 < 16 && p[y * 16 + x + 1] == transparent) p[y * 16 + x + 1] = crackShadow
+                            if (y + 1 < 16 && p[(y + 1) * 16 + x] == transparent) p[(y + 1) * 16 + x] = crackShadow
                         }
                     }
                 }
