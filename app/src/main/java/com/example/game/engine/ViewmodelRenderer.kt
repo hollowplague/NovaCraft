@@ -10,15 +10,16 @@ import kotlin.math.abs
 import kotlin.math.sin
 
 /**
- * Renders the authentic first-person 3D player arm and held voxel block
- * in the lower-right viewport with walking bobbing and punch/place swing animations.
+ * First-person held voxel block renderer for NovaCraft 1.1.0:
+ * - Empty POV hand deleted (clean, unobstructed view when empty-handed)
+ * - Compact 3D held block neatly tucked in the lower-right corner so it never covers the screen
+ * - Smooth walking bobbing and crisp placement/punch swing animation
  */
 class ViewmodelRenderer {
 
     private val viewmodelProj = FloatArray(16)
     private val viewmodelMVP = FloatArray(16)
     private val viewmodelModel = FloatArray(16)
-    private val tempMat = FloatArray(16)
 
     // Animation state
     private var walkBobTimer = 0f
@@ -26,10 +27,8 @@ class ViewmodelRenderer {
     private var swingProgress = 1.0f // 1.0 = idle, 0.0..1.0 = swinging
     private val SWING_DURATION = 0.22f // seconds
 
-    // Vertex buffers
+    // Vertex buffer for compact held block
     private var blockBuffer: FloatBuffer? = null
-    private var armBuffer: FloatBuffer? = null
-    private var emptyHandArmBuffer: FloatBuffer? = null
     private var lastHeldBlock: BlockType? = null
 
     fun triggerSwing() {
@@ -39,10 +38,10 @@ class ViewmodelRenderer {
     fun update(deltaSec: Float, isMoving: Boolean) {
         // Smoothly interpolate bobbing intensity: 0 when idle, 1 when walking
         val targetIntensity = if (isMoving) 1.0f else 0.0f
-        bobIntensity += (targetIntensity - bobIntensity) * (deltaSec * 10f).coerceIn(0f, 1f)
+        bobIntensity += (targetIntensity - bobIntensity) * (deltaSec * 9.0f).coerceIn(0f, 1f)
 
-        if (bobIntensity > 0.01f) {
-            walkBobTimer += deltaSec * 8.0f
+        if (bobIntensity > 0.005f) {
+            walkBobTimer += deltaSec * 8.5f
         }
 
         // Update swing animation
@@ -52,7 +51,8 @@ class ViewmodelRenderer {
     }
 
     /**
-     * Renders the 3D player arm and held block in a dedicated viewmodel pass.
+     * Renders the 3D held block in a dedicated first-person pass.
+     * If empty-handed (AIR), does not draw anything (POV hand deleted).
      */
     fun render(
         shader: VoxelShader,
@@ -63,7 +63,12 @@ class ViewmodelRenderer {
         sunColor: FloatArray,
         ambColor: FloatArray
     ) {
-        // 1. Clear depth buffer so held item never clips into nearby terrain/walls
+        // POV hand deleted: if empty-handed, keep screen completely clean and unobstructed
+        if (heldBlock == BlockType.AIR) {
+            return
+        }
+
+        // 1. Clear depth buffer so held block never clips into nearby terrain/walls
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT)
 
         // 2. Setup dedicated first-person camera projection (fixed 52 deg FOV)
@@ -72,65 +77,46 @@ class ViewmodelRenderer {
         // 3. Compute Viewmodel Model-View Matrix
         Matrix.setIdentityM(viewmodelModel, 0)
 
-        // Natural walking bobbing: sinusoidal figure-8 horizontal and vertical dip
-        val bobX = sin(walkBobTimer) * 0.016f * bobIntensity
-        val bobY = -abs(kotlin.math.cos(walkBobTimer)) * 0.014f * bobIntensity
-        val bobRoll = sin(walkBobTimer) * 2.2f * bobIntensity
+        // Realistic walking bobbing: subtle sinusoidal figure-8 horizontal and vertical dip
+        val bobX = sin(walkBobTimer) * 0.012f * bobIntensity
+        val bobY = -abs(kotlin.math.cos(walkBobTimer)) * 0.010f * bobIntensity
+        val bobRoll = sin(walkBobTimer) * 1.8f * bobIntensity
 
         // Swing animation calculations
         val isSwinging = swingProgress < 1.0f
         val swingSin = if (isSwinging) sin(swingProgress * PI.toFloat()) else 0.0f
-        val swingRotX = swingSin * 40.0f
-        val swingRotY = -swingSin * 45.0f
-        val swingTransY = -swingSin * 0.14f
-        val swingTransZ = swingSin * 0.10f
+        val swingRotX = swingSin * 30.0f
+        val swingRotY = -swingSin * 35.0f
+        val swingRotZ = swingSin * 12.0f
+        val swingTransX = -swingSin * 0.04f
+        val swingTransY = -swingSin * 0.10f
+        val swingTransZ = swingSin * 0.06f
 
-        val isAir = (heldBlock == BlockType.AIR)
-
-        // Minecraft authentic first-person placement in lower-right viewport
-        // Empty fist is positioned so the player's forearm and hand clearly enter diagonally from the bottom-right corner.
-        val posX = (if (isAir) 0.22f else 0.26f) + bobX
-        val posY = (if (isAir) -0.15f else -0.17f) + bobY + swingTransY
-        val posZ = (if (isAir) -0.36f else -0.40f) + swingTransZ
+        // Compact held 3D block: positioned neatly in the lower-right corner
+        val posX = 0.30f + bobX + swingTransX
+        val posY = -0.22f + bobY + swingTransY
+        val posZ = -0.52f + swingTransZ
 
         Matrix.translateM(viewmodelModel, 0, posX, posY, posZ)
-
-        // Authentic Minecraft handheld item rotation:
-        if (isAir) {
-            // Steve bare punch arm: angled up-left towards crosshair
-            Matrix.rotateM(viewmodelModel, 0, 18f + swingRotX, 1f, 0f, 0f)
-            Matrix.rotateM(viewmodelModel, 0, -32f + swingRotY, 0f, 1f, 0f)
-            Matrix.rotateM(viewmodelModel, 0, 8f + bobRoll, 0f, 0f, 1f)
-        } else {
-            // Block held in right hand: ~42 deg yaw so top, front and side are all visible, 22 deg pitch upright
-            Matrix.rotateM(viewmodelModel, 0, 22f + swingRotX, 1f, 0f, 0f)
-            Matrix.rotateM(viewmodelModel, 0, -42f + swingRotY, 0f, 1f, 0f)
-            Matrix.rotateM(viewmodelModel, 0, 4f + bobRoll, 0f, 0f, 1f)
-        }
+        // Authentic Minecraft item rotation: 42 deg yaw (showing front & side faces), 22 deg pitch upright (showing top)
+        Matrix.rotateM(viewmodelModel, 0, 22f + swingRotX, 1f, 0f, 0f)
+        Matrix.rotateM(viewmodelModel, 0, -42f + swingRotY, 0f, 1f, 0f)
+        Matrix.rotateM(viewmodelModel, 0, -4f + bobRoll + swingRotZ, 0f, 0f, 1f)
 
         // Compute MVP
         Matrix.multiplyMM(viewmodelMVP, 0, viewmodelProj, 0, viewmodelModel, 0)
 
-        // 4. Build/Update held block buffer if holding a real block
-        if (!isAir && (heldBlock != lastHeldBlock || blockBuffer == null)) {
+        // 4. Build/Update held block buffer
+        if (heldBlock != lastHeldBlock || blockBuffer == null) {
             lastHeldBlock = heldBlock
             blockBuffer = buildHeldBlockMesh(heldBlock)
         }
 
-        // 5. Build Steve arm buffers
-        if (armBuffer == null) {
-            armBuffer = buildSteveArmMesh(isEmptyHand = false)
-        }
-        if (emptyHandArmBuffer == null) {
-            emptyHandArmBuffer = buildSteveArmMesh(isEmptyHand = true)
-        }
-
-        // 6. Draw with VoxelShader using exact environmental lighting from sky
+        // 5. Draw with VoxelShader using exact environmental lighting from sky
         GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glUseProgram(shader.programId)
         GLES20.glUniformMatrix4fv(shader.uMVPMatrixLoc, 1, false, viewmodelMVP, 0)
         GLES20.glUniform3f(shader.uCameraPosLoc, 0f, 0f, 0f)
-        // Pass real environmental lighting
         GLES20.glUniform3f(shader.uSunDirLoc, sunDir[0], sunDir[1], sunDir[2])
         GLES20.glUniform3f(shader.uSunColorLoc, sunColor[0], sunColor[1], sunColor[2])
         GLES20.glUniform3f(shader.uAmbientColorLoc, ambColor[0], ambColor[1], ambColor[2])
@@ -143,20 +129,8 @@ class ViewmodelRenderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
         GLES20.glUniform1i(shader.uTextureLoc, 0)
 
-        // Draw held block (if not AIR)
-        if (!isAir) {
-            blockBuffer?.let { buf ->
-                drawBuffer(shader, buf, 36) // 6 faces * 2 tris * 3 verts = 36 verts
-            }
-            // Draw arm supporting the block
-            armBuffer?.let { buf ->
-                drawBuffer(shader, buf, 72) // 2 segments (sleeve + hand) = 72 verts
-            }
-        } else {
-            // Draw empty fist punch arm
-            emptyHandArmBuffer?.let { buf ->
-                drawBuffer(shader, buf, 72)
-            }
+        blockBuffer?.let { buf ->
+            drawBuffer(shader, buf, 36) // 6 faces * 2 tris * 3 verts = 36 verts
         }
     }
 
@@ -188,13 +162,15 @@ class ViewmodelRenderer {
     }
 
     /**
-     * Builds a 3D miniature cube mesh representing the held item.
+     * Builds a neat, compact 3D voxel cube representing the held item.
+     * Full width = ~0.16m (half-extent 0.08m) so it sits comfortably in the corner
+     * and never obstructs the gameplay screen.
      */
     private fun buildHeldBlockMesh(block: BlockType): FloatBuffer {
         val list = ArrayList<Float>(36 * Chunk.FLOATS_PER_VERTEX)
-        val s = 0.12f // Half-extent = 0.24 cube size
+        val s = 0.08f // Compact 0.16m cube size
         val cx = 0.0f
-        val cy = 0.05f
+        val cy = 0.0f
         val cz = 0.0f
 
         val topUV = TextureAtlas.getTileUV(block.topTex)
@@ -215,7 +191,7 @@ class ViewmodelRenderer {
             cx + s, cy - s, cz + s,
             cx + s, cy - s, cz - s,
             cx - s, cy - s, cz - s,
-            0f, -1f, 0f, bottomUV, 0.5f
+            0f, -1f, 0f, bottomUV, 0.50f
         )
         // North (+Z)
         addQuad(list,
@@ -223,7 +199,7 @@ class ViewmodelRenderer {
             cx - s, cy + s, cz + s,
             cx - s, cy - s, cz + s,
             cx + s, cy - s, cz + s,
-            0f, 0f, 1f, sideUV, 0.8f
+            0f, 0f, 1f, sideUV, 0.82f
         )
         // South (-Z)
         addQuad(list,
@@ -231,7 +207,7 @@ class ViewmodelRenderer {
             cx + s, cy + s, cz - s,
             cx + s, cy - s, cz - s,
             cx - s, cy - s, cz - s,
-            0f, 0f, -1f, sideUV, 0.8f
+            0f, 0f, -1f, sideUV, 0.82f
         )
         // East (+X)
         addQuad(list,
@@ -239,7 +215,7 @@ class ViewmodelRenderer {
             cx + s, cy + s, cz - s,
             cx + s, cy - s, cz - s,
             cx + s, cy - s, cz + s,
-            1f, 0f, 0f, sideUV, 0.65f
+            1f, 0f, 0f, sideUV, 0.68f
         )
         // West (-X)
         addQuad(list,
@@ -247,64 +223,8 @@ class ViewmodelRenderer {
             cx - s, cy + s, cz + s,
             cx - s, cy - s, cz + s,
             cx - s, cy - s, cz - s,
-            -1f, 0f, 0f, sideUV, 0.65f
+            -1f, 0f, 0f, sideUV, 0.68f
         )
-
-        val buf = ByteBuffer.allocateDirect(list.size * 4)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-        for (f in list) buf.put(f)
-        buf.position(0)
-        return buf
-    }
-
-    /**
-     * Builds Steve's classic player forearm with cyan shirt sleeve and peach skin hand.
-     */
-    private fun buildSteveArmMesh(isEmptyHand: Boolean): FloatBuffer {
-        val list = ArrayList<Float>(72 * Chunk.FLOATS_PER_VERTEX)
-        val w = if (isEmptyHand) 0.10f else 0.085f
-        val h = if (isEmptyHand) 0.10f else 0.085f
-        val len = if (isEmptyHand) 0.45f else 0.42f
-
-        val x0 = if (isEmptyHand) -0.05f else 0.03f
-        val x1 = x0 + w
-        val y0 = if (isEmptyHand) -0.05f else -0.10f
-        val y1 = y0 + h
-        val z0 = if (isEmptyHand) 0.18f else 0.22f
-        val z1 = z0 - len
-        val zSplit = z0 - len * 0.48f // Boundary between sleeve and bare forearm/hand
-
-        val sleeveUV = TextureAtlas.getTileUV(TextureAtlas.TILE_STEVE_SLEEVE)
-        val skinUV = TextureAtlas.getTileUV(TextureAtlas.TILE_STEVE_SKIN)
-
-        // 1. REAR CUBOID: STEVE'S CYAN SHIRT SLEEVE
-        // Top
-        addQuad(list, x0, y1, zSplit, x1, y1, zSplit, x1, y1, z0, x0, y1, z0, 0f, 1f, 0f, sleeveUV, 0.95f)
-        // Bottom
-        addQuad(list, x0, y0, z0, x1, y0, z0, x1, y0, zSplit, x0, y0, zSplit, 0f, -1f, 0f, sleeveUV, 0.5f)
-        // Front (+Z towards camera)
-        addQuad(list, x1, y1, z0, x0, y1, z0, x0, y0, z0, x1, y0, z0, 0f, 0f, 1f, sleeveUV, 0.8f)
-        // Back (-Z towards hand)
-        addQuad(list, x0, y1, zSplit, x1, y1, zSplit, x1, y0, zSplit, x0, y0, zSplit, 0f, 0f, -1f, sleeveUV, 0.8f)
-        // Right (+X)
-        addQuad(list, x1, y1, z0, x1, y1, zSplit, x1, y0, zSplit, x1, y0, z0, 1f, 0f, 0f, sleeveUV, 0.7f)
-        // Left (-X)
-        addQuad(list, x0, y1, zSplit, x0, y1, z0, x0, y0, z0, x0, y0, zSplit, -1f, 0f, 0f, sleeveUV, 0.7f)
-
-        // 2. FRONT CUBOID: STEVE'S PEACH SKIN HAND / WRIST
-        // Top
-        addQuad(list, x0, y1, z1, x1, y1, z1, x1, y1, zSplit, x0, y1, zSplit, 0f, 1f, 0f, skinUV, 0.95f)
-        // Bottom
-        addQuad(list, x0, y0, zSplit, x1, y0, zSplit, x1, y0, z1, x0, y0, z1, 0f, -1f, 0f, skinUV, 0.5f)
-        // Front (+Z seam)
-        addQuad(list, x1, y1, zSplit, x0, y1, zSplit, x0, y0, zSplit, x1, y0, zSplit, 0f, 0f, 1f, skinUV, 0.8f)
-        // Back (-Z knuckles/fingers)
-        addQuad(list, x0, y1, z1, x1, y1, z1, x1, y0, z1, x0, y0, z1, 0f, 0f, -1f, skinUV, 0.85f)
-        // Right (+X)
-        addQuad(list, x1, y1, zSplit, x1, y1, z1, x1, y0, z1, x1, y0, zSplit, 1f, 0f, 0f, skinUV, 0.7f)
-        // Left (-X)
-        addQuad(list, x0, y1, z1, x0, y1, zSplit, x0, y0, zSplit, x0, y0, z1, -1f, 0f, 0f, skinUV, 0.7f)
 
         val buf = ByteBuffer.allocateDirect(list.size * 4)
             .order(ByteOrder.nativeOrder())

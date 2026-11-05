@@ -17,12 +17,18 @@ data class RaycastHit(
 
 /**
  * Manages procedural generation, chunk storage, block manipulation,
- * and high-speed Amanatides-Woo 3D DDA voxel raycasting.
+ * world delta tracking for auto-save, and high-speed Amanatides-Woo 3D DDA voxel raycasting.
  */
-class VoxelWorld(val seed: Long = 424242L) {
+class VoxelWorld(
+    var seed: Long = 424242L,
+    var worldType: String = "infinite" // "infinite" or "flat"
+) {
 
     private val chunks = ConcurrentHashMap<Long, Chunk>()
-    private val perlin = PerlinNoise(seed)
+    private var perlin = PerlinNoise(seed)
+
+    // Tracks placed or broken blocks for auto-save delta persistence
+    val blockDeltas = ConcurrentHashMap<String, Byte>()
 
     val SEA_LEVEL = 20
     val WORLD_RADIUS = 2 // -2..2 in chunk coords = 5x5 = 25 chunks (80x80 blocks)
@@ -58,6 +64,8 @@ class VoxelWorld(val seed: Long = 424242L) {
         val lz = (z % 16 + 16) % 16
 
         chunk.setBlock(lx, y, lz, type)
+        // Record modification delta for auto-save persistence
+        blockDeltas["$x,$y,$z"] = type.id
 
         // Mark neighbor chunks dirty if modified on chunk boundaries
         if (lx == 0) getChunk(cx - 1, cz)?.isDirty = true
@@ -67,13 +75,72 @@ class VoxelWorld(val seed: Long = 424242L) {
     }
 
     /**
+     * Resets world parameters, regenerates base terrain, and applies saved block deltas.
+     */
+    fun resetWith(newSeed: Long, newWorldType: String, deltas: Map<String, Byte> = emptyMap()) {
+        this.seed = newSeed
+        this.worldType = if (newWorldType.equals("flat", ignoreCase = true)) "flat" else "infinite"
+        this.perlin = PerlinNoise(newSeed)
+        this.blockDeltas.clear()
+
+        generateWorld()
+
+        if (deltas.isNotEmpty()) {
+            applyBlockDeltas(deltas)
+        }
+    }
+
+    /**
+     * Applies saved block modifications on top of the generated base terrain.
+     */
+    fun applyBlockDeltas(deltas: Map<String, Byte>) {
+        blockDeltas.putAll(deltas)
+        for ((key, byteId) in deltas) {
+            val parts = key.split(",")
+            if (parts.size == 3) {
+                val x = parts[0].toIntOrNull() ?: continue
+                val y = parts[1].toIntOrNull() ?: continue
+                val z = parts[2].toIntOrNull() ?: continue
+                if (y in 0 until Chunk.HEIGHT) {
+                    val cx = floor(x / 16.0).toInt()
+                    val cz = floor(z / 16.0).toInt()
+                    val chunk = getChunk(cx, cz) ?: continue
+                    val lx = (x % 16 + 16) % 16
+                    val lz = (z % 16 + 16) % 16
+                    chunk.setBlock(lx, y, lz, BlockType.fromId(byteId))
+                }
+            }
+        }
+    }
+
+    /**
      * Procedurally generates undulating terrain with hills, water lakes,
-     * sand beaches, and leafy oak trees.
+     * sand beaches, and leafy oak trees for Infinite worlds, or Bedrock Flat terrain for Flat worlds.
      */
     fun generateWorld() {
         chunks.clear()
 
-        // 1. Generate terrain height & blocks
+        if (worldType.equals("flat", ignoreCase = true)) {
+            // Authentic Minecraft Bedrock Flat: 1 Bedrock (Y=0), 2 Dirt (Y=1, 2), 1 Grass (Y=3)
+            for (cz in -WORLD_RADIUS..WORLD_RADIUS) {
+                for (cx in -WORLD_RADIUS..WORLD_RADIUS) {
+                    val chunk = Chunk(cx, cz)
+                    for (lz in 0 until Chunk.SIZE_Z) {
+                        for (lx in 0 until Chunk.SIZE_X) {
+                            chunk.setBlockFast(lx, 0, lz, BlockType.BEDROCK.id)
+                            chunk.setBlockFast(lx, 1, lz, BlockType.DIRT.id)
+                            chunk.setBlockFast(lx, 2, lz, BlockType.DIRT.id)
+                            chunk.setBlockFast(lx, 3, lz, BlockType.GRASS.id)
+                        }
+                    }
+                    chunk.isDirty = true
+                    chunks[chunkKey(cx, cz)] = chunk
+                }
+            }
+            return
+        }
+
+        // 1. Infinite World Generation
         for (cz in -WORLD_RADIUS..WORLD_RADIUS) {
             for (cx in -WORLD_RADIUS..WORLD_RADIUS) {
                 val chunk = Chunk(cx, cz)
@@ -124,7 +191,7 @@ class VoxelWorld(val seed: Long = 424242L) {
             }
         }
 
-        // 2. Generate Oak Trees on top of grass
+        // 2. Generate Oak Trees on top of grass in Infinite worlds
         val treeRng = java.util.Random(seed + 999)
         for (cz in -WORLD_RADIUS..WORLD_RADIUS) {
             for (cx in -WORLD_RADIUS..WORLD_RADIUS) {
@@ -138,7 +205,6 @@ class VoxelWorld(val seed: Long = 424242L) {
 
                         val topY = getTopSolidBlockY(wx, wz)
                         if (topY > SEA_LEVEL && getBlock(wx, topY, wz) == BlockType.GRASS) {
-                            // Tree probability check (pseudo-random with spatial separation)
                             if (treeRng.nextFloat() < 0.035f) {
                                 placeTree(wx, topY + 1, wz)
                             }
@@ -148,8 +214,7 @@ class VoxelWorld(val seed: Long = 424242L) {
             }
         }
 
-        // 3. Mark all chunks dirty for progressive background meshing on the GL rendering thread.
-        // No mesh building is performed here so onCreate and initial window layout completes in <10ms!
+        // 3. Mark all chunks dirty for progressive background meshing on the GL rendering thread
         for (chunk in chunks.values) {
             chunk.isDirty = true
         }
@@ -179,34 +244,20 @@ class VoxelWorld(val seed: Long = 424242L) {
                 }
             }
         }
-        // Top crown leaf cross
-        setBlock(rootX, leafBaseY + 3, rootZ, BlockType.OAK_LEAVES)
-        setBlock(rootX + 1, leafBaseY + 3, rootZ, BlockType.OAK_LEAVES)
-        setBlock(rootX - 1, leafBaseY + 3, rootZ, BlockType.OAK_LEAVES)
-        setBlock(rootX, leafBaseY + 3, rootZ + 1, BlockType.OAK_LEAVES)
-        setBlock(rootX, leafBaseY + 3, rootZ - 1, BlockType.OAK_LEAVES)
-    }
-
-    fun getTopSolidBlockY(x: Int, z: Int): Int {
-        for (y in Chunk.HEIGHT - 1 downTo 0) {
-            val b = getBlock(x, y, z)
-            if (b.isSolid) return y
-        }
-        return 0
     }
 
     /**
-     * Fast Amanatides-Woo 3D Digital Differential Analyzer (DDA) raycast.
-     * Accurately finds targeted voxel and face normal without stepping gaps.
+     * Raycasts from (origin) along (direction) up to maxDistance using
+     * the Amanatides & Woo 3D Digital Differential Analyzer (DDA) grid traversal algorithm.
      */
     fun raycast(
         originX: Float, originY: Float, originZ: Float,
         dirX: Float, dirY: Float, dirZ: Float,
-        maxDistance: Float = 7.0f
+        maxDistance: Float = 6.0f
     ): RaycastHit? {
-        var x = floor(originX).toInt()
-        var y = floor(originY).toInt()
-        var z = floor(originZ).toInt()
+        var currentX = floor(originX.toDouble()).toInt()
+        var currentY = floor(originY.toDouble()).toInt()
+        var currentZ = floor(originZ.toDouble()).toInt()
 
         val stepX = sign(dirX).toInt()
         val stepY = sign(dirY).toInt()
@@ -216,49 +267,53 @@ class VoxelWorld(val seed: Long = 424242L) {
         val tDeltaY = if (dirY != 0f) abs(1.0f / dirY) else Float.MAX_VALUE
         val tDeltaZ = if (dirZ != 0f) abs(1.0f / dirZ) else Float.MAX_VALUE
 
-        var tMaxX = if (stepX > 0) (x + 1.0f - originX) * tDeltaX else (originX - x) * tDeltaX
-        var tMaxY = if (stepY > 0) (y + 1.0f - originY) * tDeltaY else (originY - y) * tDeltaY
-        var tMaxZ = if (stepZ > 0) (z + 1.0f - originZ) * tDeltaZ else (originZ - z) * tDeltaZ
+        val nextVoxelBoundaryX = if (stepX > 0) currentX + 1.0f else currentX.toFloat()
+        val nextVoxelBoundaryY = if (stepY > 0) currentY + 1.0f else currentY.toFloat()
+        val nextVoxelBoundaryZ = if (stepZ > 0) currentZ + 1.0f else currentZ.toFloat()
+
+        var tMaxX = if (dirX != 0f) (nextVoxelBoundaryX - originX) / dirX else Float.MAX_VALUE
+        var tMaxY = if (dirY != 0f) (nextVoxelBoundaryY - originY) / dirY else Float.MAX_VALUE
+        var tMaxZ = if (dirZ != 0f) (nextVoxelBoundaryZ - originZ) / dirZ else Float.MAX_VALUE
 
         var normalX = 0
         var normalY = 0
         var normalZ = 0
-        var dist = 0.0f
+        var distanceTraveled = 0f
 
-        while (dist < maxDistance) {
-            val block = getBlock(x, y, z)
-            if (block.isSolid || (block.isFluid && block != BlockType.AIR)) {
-                return RaycastHit(x, y, z, normalX, normalY, normalZ, block)
+        while (distanceTraveled <= maxDistance) {
+            val block = getBlock(currentX, currentY, currentZ)
+            if (block != BlockType.AIR && !block.isFluid) {
+                return RaycastHit(currentX, currentY, currentZ, normalX, normalY, normalZ, block)
             }
 
             if (tMaxX < tMaxY) {
                 if (tMaxX < tMaxZ) {
-                    x += stepX
-                    dist = tMaxX
+                    distanceTraveled = tMaxX
                     tMaxX += tDeltaX
+                    currentX += stepX
                     normalX = -stepX
                     normalY = 0
                     normalZ = 0
                 } else {
-                    z += stepZ
-                    dist = tMaxZ
+                    distanceTraveled = tMaxZ
                     tMaxZ += tDeltaZ
+                    currentZ += stepZ
                     normalX = 0
                     normalY = 0
                     normalZ = -stepZ
                 }
             } else {
                 if (tMaxY < tMaxZ) {
-                    y += stepY
-                    dist = tMaxY
+                    distanceTraveled = tMaxY
                     tMaxY += tDeltaY
+                    currentY += stepY
                     normalX = 0
                     normalY = -stepY
                     normalZ = 0
                 } else {
-                    z += stepZ
-                    dist = tMaxZ
+                    distanceTraveled = tMaxZ
                     tMaxZ += tDeltaZ
+                    currentZ += stepZ
                     normalX = 0
                     normalY = 0
                     normalZ = -stepZ
@@ -266,5 +321,17 @@ class VoxelWorld(val seed: Long = 424242L) {
             }
         }
         return null
+    }
+
+    /**
+     * Returns the highest solid block Y coordinate at world coordinate (x, z).
+     */
+    fun getTopSolidBlockY(x: Int, z: Int): Int {
+        if (worldType.equals("flat", ignoreCase = true)) return 3
+        for (y in Chunk.HEIGHT - 1 downTo 0) {
+            val b = getBlock(x, y, z)
+            if (b != BlockType.AIR && !b.isFluid) return y
+        }
+        return SEA_LEVEL
     }
 }

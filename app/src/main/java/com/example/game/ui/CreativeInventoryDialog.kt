@@ -9,17 +9,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -31,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -49,47 +49,53 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.game.engine.BlockType
 
-enum class InventoryCategory(val label: String) {
-    ALL("All"),
-    BUILDING("Building"),
-    NATURAL("Natural"),
-    UTILITY("Utility")
+enum class CreativeGroup(val label: String, val icon: String) {
+    SEARCH("All", "🔍"),
+    CONSTRUCTION("Build", "🧱"),
+    NATURE("Nature", "🌿"),
+    ITEMS("Items", "💎")
 }
 
 /**
- * Authentic Minecraft Bedrock Creative Inventory window:
- * Classical stone-gray container (#C6C6C6) with beveled borders, live search bar,
- * category tabs, and 3D isometric block icons.
+ * Authentic Bedrock Creative Inventory:
+ * - Left side: Group Selector Tabs (Search/All, Construction, Nature, Items)
+ * - Upper area: Live search bar and scrollable catalog of 3D isometric block cards
+ * - Bottom area: Hand Inventory (9 Hotbar Slots) with active selection indicator
+ * - Tapping any catalog block assigns it directly into the selected hand hotbar slot!
  */
 @Composable
 fun CreativeInventoryDialog(
+    hotbarSlots: List<BlockType>,
     selectedHotbarIndex: Int,
-    onSelectBlock: (BlockType) -> Unit,
+    onSelectHotbarIndex: (Int) -> Unit,
+    onAssignBlockToSlot: (Int, BlockType) -> Unit,
     onDismiss: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf(InventoryCategory.ALL) }
+    var selectedGroup by remember { mutableStateOf(CreativeGroup.SEARCH) }
+    var activeSlot by remember { mutableIntStateOf(selectedHotbarIndex) }
 
     val allBlocks = BlockType.CREATIVE_INVENTORY
 
-    val filteredBlocks = remember(searchQuery, selectedCategory) {
+    val filteredBlocks = remember(searchQuery, selectedGroup) {
         allBlocks.filter { block ->
-            val matchesCategory = when (selectedCategory) {
-                InventoryCategory.ALL -> true
-                InventoryCategory.BUILDING -> block in listOf(
+            val matchesGroup = when (selectedGroup) {
+                CreativeGroup.SEARCH -> true
+                CreativeGroup.CONSTRUCTION -> block in listOf(
                     BlockType.STONE, BlockType.COBBLESTONE, BlockType.WOOD_PLANKS,
-                    BlockType.BRICK, BlockType.BOOKSHELF
+                    BlockType.BRICK, BlockType.BOOKSHELF, BlockType.GLASS, BlockType.BEDROCK
                 )
-                InventoryCategory.NATURAL -> block in listOf(
+                CreativeGroup.NATURE -> block in listOf(
                     BlockType.GRASS, BlockType.DIRT, BlockType.SAND,
                     BlockType.OAK_WOOD, BlockType.OAK_LEAVES, BlockType.WATER
                 )
-                InventoryCategory.UTILITY -> block in listOf(
-                    BlockType.GLOWSTONE, BlockType.GLASS
+                CreativeGroup.ITEMS -> block in listOf(
+                    BlockType.GLOWSTONE, BlockType.BOOKSHELF, BlockType.BRICK,
+                    BlockType.GLASS, BlockType.WOOD_PLANKS
                 )
             }
             val matchesSearch = searchQuery.isBlank() || block.displayName.contains(searchQuery.trim(), ignoreCase = true)
-            matchesCategory && matchesSearch
+            matchesGroup && matchesSearch
         }
     }
 
@@ -100,194 +106,270 @@ fun CreativeInventoryDialog(
         Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
                 .testTag("creative_inventory_dialog"),
             shape = RoundedCornerShape(6.dp),
             color = Color(0xFFC6C6C6), // Classic Minecraft stone gray GUI
             border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF373737))
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp)
-            ) {
-                // Header with Bedrock style
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "Creative Inventory",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF282828)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(Color(0xFF4A4A4A))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "Slot #${selectedHotbarIndex + 1}",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF68D391)
-                            )
-                        }
-                    }
-
-                    // Bedrock styled close button
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(Color(0xFF373737))
-                            .padding(1.dp)
-                            .background(Color(0xFF8B8B8B))
-                            .clickable(onClick = onDismiss)
-                            .testTag("close_inventory_button"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Inventory",
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Search Bar in Minecraft inset-stone style
-                Row(
+            Row(modifier = Modifier.fillMaxSize()) {
+                // ==========================================
+                // 1. LEFT SIDEBAR: GROUP SELECTOR TABS
+                // ==========================================
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(38.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color(0xFF373737))
-                        .padding(1.5.dp)
-                        .background(Color(0xFF8B8B8B))
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .width(72.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFFB0B0B0))
+                        .border(
+                            width = 2.dp,
+                            color = Color(0xFF373737),
+                            shape = RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp)
+                        )
+                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = Color(0xFF373737),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(modifier = Modifier.weight(1f)) {
-                        if (searchQuery.isEmpty()) {
-                            Text(
-                                text = "Search blocks...",
-                                fontSize = 13.sp,
-                                color = Color(0xFF4A4A4A)
-                            )
-                        }
-                        BasicTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            singleLine = true,
-                            textStyle = TextStyle(
-                                color = Color.White,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                fontFamily = FontFamily.SansSerif
-                            ),
-                            cursorBrush = SolidColor(Color.White),
+                    for (group in CreativeGroup.values()) {
+                        val isSelected = selectedGroup == group
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("inventory_search_input")
-                        )
-                    }
-                    if (searchQuery.isNotEmpty()) {
-                        Icon(
-                            imageVector = Icons.Default.Clear,
-                            contentDescription = "Clear search",
-                            tint = Color.White,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .clickable { searchQuery = "" }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Category Tabs
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(InventoryCategory.values()) { cat ->
-                        val isSelected = (selectedCategory == cat)
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(if (isSelected) Color(0xFF373737) else Color(0xFF7A7A7A))
-                                .padding(1.dp)
-                                .background(if (isSelected) Color(0xFF4A6B3D) else Color(0xFF8B8B8B))
-                                .clickable { selectedCategory = cat }
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                                .testTag("category_tab_${cat.name.lowercase()}"),
+                                .height(52.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (isSelected) Color(0xFF373737) else Color(0xFF8B8B8B))
+                                .padding(1.5.dp)
+                                .background(if (isSelected) Color(0xFF4A6B3D) else Color(0xFFC6C6C6))
+                                .clickable { selectedGroup = group }
+                                .padding(2.dp)
+                                .testTag("group_tab_${group.name.lowercase()}"),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = cat.label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) Color.White else Color(0xFF282828)
-                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = group.icon,
+                                    fontSize = 17.sp
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = group.label,
+                                    fontSize = 9.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) Color.White else Color(0xFF282828),
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Inner beveled slot panel with 3D blocks
-                Box(
+                // ==========================================
+                // 2. MAIN CONTENT AREA
+                // ==========================================
+                Column(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFF8B8B8B))
-                        .border(2.dp, Color(0xFF373737), RoundedCornerShape(4.dp))
-                        .padding(6.dp)
+                        .fillMaxHeight()
+                        .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp)
                 ) {
-                    if (filteredBlocks.isEmpty()) {
+                    // Top Bar: Search Bar & Close Button
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Search bar
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0xFF373737))
+                                .padding(1.dp)
+                                .background(Color(0xFF8B8B8B))
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Search",
+                                tint = Color(0xFF222222),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Search blocks...",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF444444)
+                                    )
+                                }
+                                BasicTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    singleLine = true,
+                                    textStyle = TextStyle(
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        fontFamily = FontFamily.SansSerif
+                                    ),
+                                    cursorBrush = SolidColor(Color.White),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("inventory_search_input")
+                                )
+                            }
+                            if (searchQuery.isNotEmpty()) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = "Clear search",
+                                    tint = Color.White,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable { searchQuery = "" }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        // Close [✕] Button
                         Box(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0xFF373737))
+                                .padding(1.dp)
+                                .background(Color(0xFF8B8B8B))
+                                .clickable(onClick = onDismiss)
+                                .testTag("close_inventory_button"),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "No blocks matching \"$searchQuery\"",
-                                color = Color(0xFF373737),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 78.dp),
-                            contentPadding = PaddingValues(2.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(filteredBlocks) { block ->
-                                BedrockInventorySlot(
-                                    block = block,
-                                    onClick = {
-                                        onSelectBlock(block)
-                                        onDismiss()
-                                    }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Upper Area: Grid of Catalog Blocks
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF8B8B8B))
+                            .border(2.dp, Color(0xFF373737), RoundedCornerShape(4.dp))
+                            .padding(6.dp)
+                    ) {
+                        if (filteredBlocks.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No blocks found in ${selectedGroup.label}",
+                                    color = Color(0xFF373737),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Adaptive(minSize = 72.dp),
+                                contentPadding = PaddingValues(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(filteredBlocks) { block ->
+                                    BedrockCatalogItem(
+                                        block = block,
+                                        onClick = {
+                                            onAssignBlockToSlot(activeSlot, block)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // ==========================================
+                    // 3. BOTTOM AREA: HAND INVENTORY (HOTBAR)
+                    // ==========================================
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFFAFAFAF))
+                            .border(1.5.dp, Color(0xFF373737), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Hand Inventory (Tap block to assign to slot #${activeSlot + 1})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF222222)
+                            )
+                            Text(
+                                text = "Slot ${activeSlot + 1}/9",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF2E6325)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // 9-slot Hotbar row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            for (index in 0 until 9) {
+                                val block = hotbarSlots.getOrElse(index) { BlockType.AIR }
+                                val isSelected = activeSlot == index
+
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(44.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(if (isSelected) Color(0xFF55FF55) else Color(0xFF373737))
+                                        .padding(if (isSelected) 2.dp else 1.dp)
+                                        .background(Color(0xFF8B8B8B))
+                                        .clickable {
+                                            activeSlot = index
+                                            onSelectHotbarIndex(index)
+                                        }
+                                        .testTag("inventory_hotbar_slot_$index"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (block != BlockType.AIR) {
+                                        IsometricBlockIcon(block = block, size = 32.dp)
+                                    } else {
+                                        Text(
+                                            text = "${index + 1}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White.copy(alpha = 0.35f)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -297,40 +379,34 @@ fun CreativeInventoryDialog(
     }
 }
 
-/**
- * Single Minecraft Bedrock item slot with inset borders and 3D Isometric block icon
- */
 @Composable
-private fun BedrockInventorySlot(
+private fun BedrockCatalogItem(
     block: BlockType,
     onClick: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(82.dp)
+            .height(68.dp)
             .clip(RoundedCornerShape(3.dp))
-            .background(Color(0xFF373737)) // Dark outer shadow
-            .padding(1.5.dp)
-            .background(Color(0xFF8F8F8F)) // Stone slot interior
+            .background(Color(0xFF373737))
+            .padding(1.dp)
+            .background(Color(0xFF8B8B8B))
             .clickable(onClick = onClick)
-            .testTag("block_card_${block.name.lowercase()}"),
+            .padding(4.dp)
+            .testTag("catalog_item_${block.name.lowercase()}"),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(3.dp)
+            verticalArrangement = Arrangement.Center
         ) {
-            // Authentic 3D Isometric Voxel Cube
             IsometricBlockIcon(block = block, size = 36.dp)
-
-            Spacer(modifier = Modifier.height(4.dp))
-
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = block.displayName,
                 fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Medium,
                 color = Color.White,
                 maxLines = 1
             )

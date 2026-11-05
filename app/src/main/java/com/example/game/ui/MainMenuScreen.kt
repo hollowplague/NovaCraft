@@ -122,7 +122,7 @@ fun MainMenuScreen(
 
             // Version info footer
             Text(
-                text = "NovaCraft v1.0.5 • Infinite Creative",
+                text = "NovaCraft v1.1.5 • Infinite & Flat Worlds",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
                 color = Color.White.copy(alpha = 0.55f)

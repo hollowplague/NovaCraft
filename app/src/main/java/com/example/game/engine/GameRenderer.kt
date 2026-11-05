@@ -113,6 +113,11 @@ class GameRenderer(
     val viewmodelRenderer = ViewmodelRenderer()
     val particleSystem = ParticleSystem()
     private var currentAspect = 1.0f
+
+    // Realistic camera view bobbing
+    private var camBobTimer = 0f
+    private var camBobIntensity = 0f
+
     @Volatile var viewportWidth = 1
     @Volatile var viewportHeight = 1
     private val invertedMvpMatrix = FloatArray(16)
@@ -285,12 +290,37 @@ class GameRenderer(
         GLES20.glClearColor(skyR, skyG, skyB, 1.0f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
-        // Compute View Matrix from player orientation
+        // Compute realistic camera head bobbing based on player movement
+        val horizSpeedSq = player.velX * player.velX + player.velZ * player.velZ
+        val isMovingOnGround = horizSpeedSq > 0.05f && player.isOnGround && !player.isFlying
+
+        val targetIntensity = if (isMovingOnGround) 1.0f else 0.0f
+        camBobIntensity += (targetIntensity - camBobIntensity) * (deltaSec * 8.0f).coerceIn(0f, 1f)
+
+        if (camBobIntensity > 0.005f) {
+            val speed = sqrt(horizSpeedSq).coerceIn(1.0f, 7.5f)
+            camBobTimer += deltaSec * speed * 1.8f
+        }
+
+        val rightVec = player.getRightVector()
+        val stepDip = -kotlin.math.abs(cos(camBobTimer)) * 0.032f * camBobIntensity
+        val stepSway = sin(camBobTimer) * 0.018f * camBobIntensity
+        val rollAngle = sin(camBobTimer) * 0.0075f * camBobIntensity // subtle realistic head roll tilt (~0.43 deg)
+
+        val bobEyeX = player.eyeX + rightVec[0] * stepSway
+        val bobEyeY = player.eyeY + stepDip
+        val bobEyeZ = player.eyeZ + rightVec[2] * stepSway
+
+        val upX = -sin(rollAngle) * rightVec[0]
+        val upY = cos(rollAngle)
+        val upZ = -sin(rollAngle) * rightVec[2]
+
+        // Compute View Matrix from player orientation with realistic head bobbing
         Matrix.setLookAtM(
             viewMatrix, 0,
-            player.eyeX, player.eyeY, player.eyeZ,
-            player.eyeX + forward[0], player.eyeY + forward[1], player.eyeZ + forward[2],
-            0f, 1f, 0f
+            bobEyeX, bobEyeY, bobEyeZ,
+            bobEyeX + forward[0], bobEyeY + forward[1], bobEyeZ + forward[2],
+            upX, upY, upZ
         )
 
         // Compute MVP matrix and invert for screen-space touch raycasting
@@ -385,7 +415,7 @@ class GameRenderer(
 
         // ---------------- PASS 4: FIRST-PERSON 3D HAND & HELD BLOCK ----------------
         val isMoving = (player.velX * player.velX + player.velZ * player.velZ) > 0.05f
-        viewmodelRenderer.update(deltaSec, isMoving)
+        viewmodelRenderer.update(deltaSec, isMoving && player.isOnGround && !player.isFlying)
         viewmodelRenderer.render(
             shader,
             textureId,

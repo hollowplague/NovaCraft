@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for NovaCraft 1.0.5 release: (1) Fix POV hand positioning and projection in ViewmodelRenderer so Steve's arm and fist are prominently visible on-screen, (2) Implement high-fidelity block destruction particles (16 miniature textured/colored debris cubes bursting outwards with velocity, drag, and gravity physics upon block breaking), (3) Bump version to 1.0.5 (versionCode = 6), compile signed release APK, and export to ApkCraft/novacraft-1.0.5.apk.",
-  "updatedAt": "2026-11-05T10:32:20.209759385Z",
+  "summary": "Implementation plan for NovaCraft Update 1.1.5: Adding a full Minecraft-style Worlds management system with New World creation (Seed, Flat/Infinite types), local JSON world auto-saving, redesigned Creative Inventory with category tabs and hand inventory, Title Screen polish, and signed release APK build novacraft-1.1.5.apk.",
+  "updatedAt": "2026-11-05T11:54:16.210506877Z",
   "requestFeedback": true,
   "userFacing": true
 }

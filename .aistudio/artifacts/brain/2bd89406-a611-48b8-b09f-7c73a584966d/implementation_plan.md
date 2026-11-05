@@ -1,67 +1,144 @@
-# Implementation Plan: NovaCraft 1.0.5 — Visible POV Hand, Destroy Particles & Release APK
+# NovaCraft Update 1.1.5: Worlds System, Auto-Save, Creative Inventory Redesign & Release APK
 
-Deliver the **NovaCraft 1.0.5 Update** featuring:
-1. **Fully Visible First-Person POV Hand**:
-   - Fix the viewmodel projection matrix and arm geometry in `ViewmodelRenderer.kt`.
-   - Ensure Steve's forearm (cyan sleeve) and hand (peach fist) enter from the bottom-right corner and extend into clear view when empty or holding items, with walking bobbing and punch swings.
-2. **Block Destruction Particles (16 Debris Cubes with Physics)**:
-   - When a block breaks, spawn 16 small debris particles centered at the destroyed voxel.
-   - Debris particles sample the destroyed block's texture colors, burst outward in 3D with random trajectories ($v_x, v_y, v_z$), and fall under gravity with ground bounce/fade.
-   - Render particles efficiently in a dedicated OpenGL pass using instanced/batched quads.
-3. **1.0.5 Release Build & Export**:
-   - Update `versionCode = 6` and `versionName = "1.0.5"` in `app/build.gradle.kts`.
-   - Update title version in `MainMenuScreen.kt` to `v1.0.5`.
-   - Build signed release APK and export to `ApkCraft/novacraft-1.0.5.apk`.
+Comprehensive expansion adding authentic Minecraft Bedrock worlds management, customizable world creation, background auto-save persistence, and an overhauled category-based creative inventory.
+
+## User Review & Critical Decisions
+
+> [!IMPORTANT]
+> The following decisions were confirmed based on your preferences:
+> - **Inventory Slot Assignment**: Tap any catalog block in the upper pane to instantly place it into the currently selected hand inventory (hotbar) slot.
+> - **World Persistence**: Fast local JSON storage in the app's internal files directory (`context.filesDir/worlds/`), automatically serializing world metadata, seed, player position, hotbar, and modified block coordinates on auto-save and pause.
+> - **Flat World Generation**: Generates the authentic classic Bedrock flat preset: 1 Bedrock layer ($Y=0$), 2 Dirt layers ($Y=1, 2$), and 1 Grass block surface ($Y=3$), with all upper layers as air.
+> - **Release APK**: Signed release APK will be built and exported to `ApkCraft/novacraft-1.1.5.apk`.
 
 ---
 
-### Technical Architecture & Changes
+## 1. Overview & Core Concept
 
-#### 1. `ViewmodelRenderer.kt` (POV Hand Visibility)
-- **Problem**: Steve's hand coordinates were translated too far down/right (`posX = 0.28f, posY = -0.22f, posZ = -0.48f`), and the arm cuboid was constructed with negative $Z$ pointing away from the camera while the model was rotated, placing the hand below the bottom screen crop.
-- **Fix**:
-  - Re-anchor Steve's arm:
-    - Base position: `posX = 0.22f, posY = -0.16f, posZ = -0.38f`.
-    - Forearm starts at bottom-right corner of the viewport and angles forward-left toward the screen center.
-    - Sleeve segment: cyan `#00A8A8` cuboid.
-    - Fist segment: peach `#C88E68` cuboid.
-    - When holding a block: block rests cleanly in the palm/fingers of the hand.
-    - When empty: hand forms a classic Steve punch fist.
-  - Disable face culling during viewmodel pass (`GLES20.glDisable(GLES20.GL_CULL_FACE)`) to ensure all faces of the arm are always rendered.
-
-#### 2. `ParticleSystem.kt` & `GameRenderer.kt` (Block Destroy Particles)
-- Create `com.example.game.engine.ParticleSystem.kt`:
-  - `Particle(x, y, z, vx, vy, vz, size, colorR, colorG, colorB, maxLife, currentLife)`
-  - `spawnBlockBreak(blockX, blockY, blockZ, blockType)`:
-    - Spawns 16 debris particles from the broken voxel.
-    - Particles burst outward in all directions with random velocities:
-      $$v_x \in [-1.8, 1.8], \quad v_y \in [1.5, 4.0], \quad v_z \in [-1.8, 1.8]$$
-    - Gravity: $g = -9.8\text{ m/s}^2$.
-    - Size: $0.08\text{m}$ mini-cubes.
-    - Colors sampled directly from the block's texture palette (e.g. grass green + dirt brown for grass, wood brown for logs, gray for stone).
-  - `render(mvpMatrix, shader)`:
-    - Renders all active debris particles as 3D camera-facing billboards/mini-cubes with fading alpha as lifetime approaches zero.
-- Wire into `GameRenderer.kt`:
-  - In `onDrawFrame`, update particles with `deltaSec`.
-  - When `miningProgress >= 1.0f` breaks a block: call `particleSystem.spawnBlockBreak(...)`.
-  - Render particles after chunk rendering in `PASS 2.5`.
-
-#### 3. Version Bump & APK Release
-- In `app/build.gradle.kts`:
-  - `versionCode = 6`
-  - `versionName = "1.0.5"`
-- In `MainMenuScreen.kt`:
-  - Update version string to `NovaCraft v1.0.5 • Infinite Creative`.
-- Run Gradle `assembleRelease` with keystore credentials:
-  - Copy `app/build/outputs/apk/release/app-release.apk` to `ApkCraft/novacraft-1.0.5.apk`.
-  - Ensure file permissions `644`.
+- **What It Delivers**:
+  1. **Worlds Screen**: The "Play" button on the Title Screen opens a dedicated Worlds tab listing all existing worlds with world name, creation date, seed, type badge ("Infinite" or "Flat"), and Play/Delete actions.
+  2. **Create New World Screen**: Top-right "New" button on the Worlds tab opens a Bedrock-themed creation form where players can name their world, select the generation type ("Infinite" vs "Flat"), enter or randomize a numeric/text seed, and generate the world.
+  3. **Auto-Save & World Persistence**: Continuous background auto-save every 25 seconds and immediate save when pausing or quitting to the title screen. Re-opening a world restores exact player coordinates, look orientation, hotbar loadout, and all placed/broken blocks.
+  4. **Redesigned Bedrock Creative Inventory**:
+     - Left category sidebar with 4 tabs: 🔍 All / Search, 🧱 Construction, 🌿 Nature, and 💎 Precious/Items.
+     - Upper pane: Grid of 3D isometric block cards in the active category.
+     - Bottom pane: 9-slot Hand Inventory (Hotbar) with active slot highlighted. Tapping any catalog item fills the active slot.
+  5. **Signed Release APK**: Version bumped to `1.1.5` (`versionCode = 10`) and signed release APK exported to `ApkCraft/novacraft-1.1.5.apk`.
 
 ---
 
-### Verification Checklist
-- [ ] Steve's first-person arm with cyan sleeve and peach fist is clearly visible in the lower right when holding an empty slot (`AIR`).
-- [ ] When holding a block, the hand supports the block at a natural angle.
-- [ ] Destroying any block produces 16 flying debris particles matching the block's color that scatter and fall with gravity.
-- [ ] Main menu displays `v1.0.5`.
-- [ ] `compile_applet` succeeds without errors.
-- [ ] Signed release APK built and exported to `ApkCraft/novacraft-1.0.5.apk`.
+## 2. User Experience & Visual Design
+
+### Screen Navigation Flow
+```
+┌────────────────────────┐
+│     Title Screen       │
+│  [Play]    [Settings]  │
+└───────────┬────────────┘
+            │ [Play]
+            ▼
+┌──────────────────────────────────────────────┐
+│  Worlds Tab              [+ New World] Button│
+│  ┌────────────────────────────────────────┐  │
+│  │ 🌍 Survival Alpha • Infinite • Today   │  │
+│  │    [Play World]   [Delete]             │  │
+│  ├────────────────────────────────────────┤  │
+│  │ 🟩 Flat Testing • Flat • Yesterday     │  │
+│  │    [Play World]   [Delete]             │  │
+│  └────────────────────────────────────────┘  │
+└──────────────┬───────────────────────────────┘
+               │ [+ New World]
+               ▼
+┌──────────────────────────────────────────────┐
+│  Create World Screen (Bedrock Style)         │
+│  - World Name: [ My Creative World       ]   │
+│  - World Type: [ (•) Infinite   ( ) Flat ]   │
+│  - Seed:       [ 482910452               ]   │
+│  [Create World]               [Cancel]       │
+└──────────────────────────────────────────────┘
+```
+
+### Redesigned Creative Inventory Layout
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Creative Inventory                                    [✕]  │
+├───────┬─────────────────────────────────────────────────────┤
+│ 🔍 All│  [Stone]    [Cobble]   [Brick]   [Planks]  [Glass]  │
+│ 🧱 Bld│  [Sand]     [Leaves]   [Wood]    [Gold]    [TNT]    │
+│ 🌿 Nat│  [Bedrock]  [Books]    [Water]   ...       ...      │
+│ 💎 Itm│                                                     │
+├───────┴─────────────────────────────────────────────────────┤
+│  Hand Inventory (Hotbar)                                    │
+│  ┌───┬───┬───┬───┬───┬───┬───┬───┬───┐                      │
+│  │[1]│[2]│[3]│[4]│[5]│[6]│[7]│[8]│[9]│                      │
+│  └───┴───┴───┴───┴───┴───┴───┴───┴───┘                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Styling**:
+  - Classic Bedrock stone headers and darkened backdrop panels (`#1F1B14`, `#3C3C3C`, `#222222`).
+  - Active hotbar slot framed with bold white outline and emerald-green selection glow (`#55FF55`).
+  - Left category selector with tab icons and Bedrock beveled highlight buttons.
+
+---
+
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1: Fast Delta-Based Local JSON Storage**:
+  - *Chosen Approach*: Store world configuration (seed, type, name, timestamp, player position, hotbar) and block modifications as a sparse delta map `modifiedBlocks: Map<Long, Int>`.
+  - *Why*: Procedural generation generates the base terrain from the seed in milliseconds; storing only user-authored edits makes world files tiny (<50KB), saves instantaneously without freezing the GL thread, and loads instantly.
+- **Decision 2: Flat World Implementation**:
+  - *Chosen Approach*: Support `WorldType.FLAT` in `VoxelWorld` with bedrock at $Y=0$, dirt at $Y=1, 2$, and grass at $Y=3$.
+  - *Why*: Matches Bedrock standard flat preset and allows players to build immediately on a pristine level plane.
+- **Decision 3: Category Filtering**:
+  - *Chosen Approach*: Categorize `BlockType` enum into `ALL`, `CONSTRUCTION`, `NATURE`, and `ITEMS`.
+  - *Why*: Makes finding specific blocks fast on mobile without scrolling through large unorganized lists.
+
+---
+
+## 4. Technical Architecture & Implementation Steps
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      WorldSaveManager                       │
+│  - loadWorlds(): List<WorldMetadata>                        │
+│  - saveWorld(worldData): Boolean                            │
+│  - deleteWorld(worldId): Boolean                            │
+│  - loadWorldData(worldId): WorldSaveData                    │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+               ┌───────────────┴───────────────┐
+               ▼                               ▼
+┌─────────────────────────────┐ ┌─────────────────────────────┐
+│         VoxelWorld          │ │     Navigation State        │
+│  - seed: Long               │ │  MAIN_MENU                  │
+│  - worldType: FLAT/INFINITE │ │  WORLDS_LIST                │
+│  - modifiedBlocks: Map      │ │  CREATE_WORLD               │
+│  - getModifiedBlockDeltas() │ │  IN_GAME                    │
+└─────────────────────────────┘ └─────────────────────────────┘
+```
+
+### Planned File Changes
+
+1. **`WorldSaveManager.kt` (New Engine / Data Layer)**:
+   - Data classes: `WorldMetadata`, `WorldSaveData`, `BlockDelta`.
+   - File I/O for `worlds.json` and per-world JSON save files in `context.filesDir/worlds/`.
+   - Auto-save integration.
+2. **`VoxelWorld.kt`**:
+   - Add `worldType` parameter ("infinite" vs "flat").
+   - Flat terrain generation routine.
+   - Record block edits in a delta map for persistence, and add `applyBlockDeltas()`.
+3. **`WorldsScreen.kt` & `CreateWorldScreen.kt` (New UI)**:
+   - `WorldsScreen`: Worlds list, "New" button in top-right, play world, delete world, back to menu.
+   - `CreateWorldScreen`: Name input, Infinite/Flat selector, Seed input, Create & Cancel actions.
+4. **`CreativeInventoryDialog.kt` (Overhaul)**:
+   - Add left category sidebar (All, Construction, Nature, Items).
+   - Display upper category blocks grid.
+   - Display lower 9-slot Hand Inventory with active slot assignment.
+5. **`MainActivity.kt`**:
+   - State machine: `ScreenState` enum (`MAIN_MENU`, `WORLDS_LIST`, `CREATE_WORLD`, `IN_GAME`).
+   - Auto-save timer and lifecycle hooks.
+   - World switching and initialization.
+6. **`app/build.gradle.kts` & `MainMenuScreen.kt`**:
+   - Bump version to `1.1.5` (`versionCode = 10`, `versionName = "1.1.5"`).
+   - Build signed release APK and export to `ApkCraft/novacraft-1.1.5.apk`.
